@@ -1,0 +1,1467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TestLink — Online Test &amp; Quiz Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
+<style>
+:root{
+  --ink:#1B2430;
+  --ink-soft:#3A4454;
+  --paper:#F6F3EC;
+  --paper-line:#E4DCC8;
+  --card:#FFFFFF;
+  --amber:#B8792E;
+  --amber-soft:#F1E2C9;
+  --green:#2F7D5A;
+  --green-soft:#DCEEE4;
+  --red:#AE4131;
+  --red-soft:#F6DFDA;
+  --muted:#78716A;
+  --border:#DED6C4;
+  --shadow: 0 1px 0 rgba(27,36,48,.04);
+  --radius: 3px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:'Inter',sans-serif;
+  font-size:15px;
+  line-height:1.5;
+  min-height:100vh;
+}
+h1,h2,h3,h4{font-family:'Source Serif 4',serif; font-weight:700; margin:0; color:var(--ink);}
+a{color:inherit;}
+button{font-family:'Inter',sans-serif;}
+.mono{font-family:'IBM Plex Mono',monospace;}
+
+/* ---------- layout shells ---------- */
+#app{min-height:100vh; display:flex; flex-direction:column;}
+.topbar{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 28px; border-bottom:1px solid var(--border);
+  background:var(--paper);
+}
+.brand{display:flex; align-items:baseline; gap:8px; cursor:pointer;}
+.brand .mark{
+  width:26px;height:26px; border:2px solid var(--ink); border-radius:50%;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-family:'Source Serif 4',serif; font-weight:700; font-size:13px;
+}
+.brand .name{font-family:'Source Serif 4',serif; font-weight:700; font-size:19px; letter-spacing:.2px;}
+.brand .tag{color:var(--muted); font-size:12.5px;}
+.topnav{display:flex; gap:22px; font-size:13.5px; color:var(--ink-soft);}
+.topnav span{cursor:pointer; padding-bottom:3px; border-bottom:2px solid transparent;}
+.topnav span.active{border-bottom-color:var(--amber); color:var(--ink); font-weight:600;}
+.shell{flex:1; width:100%; max-width:1080px; margin:0 auto; padding:34px 28px 70px;}
+.shell.wide{max-width:1220px;}
+
+/* ---------- generic bits ---------- */
+.btn{
+  display:inline-flex; align-items:center; gap:7px;
+  padding:9px 16px; border-radius:var(--radius); border:1px solid var(--ink);
+  background:var(--ink); color:#fff; font-size:13.5px; font-weight:600;
+  cursor:pointer; transition:transform .06s ease;
+}
+.btn:active{transform:translateY(1px);}
+.btn.secondary{background:transparent; color:var(--ink); border-color:var(--border);}
+.btn.ghost{background:transparent; color:var(--ink-soft); border-color:transparent; padding:9px 8px;}
+.btn.amber{background:var(--amber); border-color:var(--amber);}
+.btn.danger{background:transparent; color:var(--red); border-color:var(--red-soft);}
+.btn.small{padding:5px 10px; font-size:12.5px;}
+.btn:disabled{opacity:.4; cursor:not-allowed;}
+.card{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);}
+.pad{padding:22px;}
+.row{display:flex; gap:14px;}
+.grow{flex:1;}
+label.field{display:block; font-size:12.5px; color:var(--muted); margin-bottom:5px; font-weight:600; letter-spacing:.2px;}
+input[type=text],input[type=number],input[type=datetime-local],textarea,select{
+  width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:var(--radius);
+  background:#fff; font-family:'Inter',sans-serif; font-size:14px; color:var(--ink);
+}
+textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;}
+.fieldgrid{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;}
+.chk{display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--ink-soft); padding:8px 0;}
+.chk input{width:16px;height:16px;}
+.hr{height:1px; background:var(--border); margin:22px 0;}
+.badge{display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:20px; letter-spacing:.3px;}
+.badge.verified{background:var(--green-soft); color:var(--green);}
+.badge.review{background:var(--red-soft); color:var(--red);}
+.badge.edited{background:var(--amber-soft); color:var(--amber);}
+.badge.draft{background:#EDEAE0; color:var(--muted);}
+.badge.published{background:var(--green-soft); color:var(--green);}
+.muted{color:var(--muted);}
+.small{font-size:12.5px;}
+.center{text-align:center;}
+.empty{padding:60px 20px; text-align:center; color:var(--muted);}
+.empty h3{color:var(--ink); margin-bottom:6px;}
+.toast{
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+  background:var(--ink); color:#fff; padding:11px 20px; border-radius:4px; font-size:13.5px;
+  z-index:999; box-shadow:0 8px 24px rgba(0,0,0,.2);
+}
+
+/* ---------- dashboard ---------- */
+.dash-head{display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:26px;}
+.stat-row{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:30px;}
+.stat{padding:16px 18px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card);}
+.stat .num{font-family:'Source Serif 4',serif; font-size:26px; font-weight:700;}
+.stat .lbl{font-size:12px; color:var(--muted); margin-top:2px;}
+.section-title{font-size:12.5px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:26px 0 12px; font-weight:700;}
+.test-list{display:flex; flex-direction:column; gap:10px;}
+.test-row{display:flex; align-items:center; justify-content:space-between; padding:15px 18px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card);}
+.test-row:hover{border-color:var(--ink);}
+.test-row .ti h4{font-size:15.5px;}
+.test-row .ti .meta{font-size:12.5px; color:var(--muted); margin-top:3px;}
+.test-row .ta{display:flex; gap:8px; align-items:center;}
+
+/* ---------- wizard ---------- */
+.steps{display:flex; gap:0; margin-bottom:28px; border-bottom:1px solid var(--border);}
+.step{padding:10px 4px; margin-right:28px; font-size:13px; color:var(--muted); border-bottom:2px solid transparent; cursor:default;}
+.step.on{color:var(--ink); font-weight:700; border-bottom-color:var(--amber);}
+.step.done{color:var(--ink-soft);}
+.dropzone{
+  border:1.5px dashed var(--border); border-radius:var(--radius); padding:40px 20px;
+  text-align:center; color:var(--muted); background:#FBF9F4; margin-bottom:18px;
+}
+.dropzone.drag{border-color:var(--amber); background:var(--amber-soft);}
+.spinner{
+  width:16px;height:16px; border:2px solid var(--border); border-top-color:var(--ink);
+  border-radius:50%; display:inline-block; animation:spin .7s linear infinite; vertical-align:-3px; margin-right:6px;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+.progressline{font-size:12.5px; color:var(--muted); margin-top:10px; min-height:18px;}
+.filepill{display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--border); border-radius:20px; font-size:12.5px; background:#fff; margin-top:10px;}
+.filepill button{border:none; background:none; cursor:pointer; color:var(--red); font-size:13px;}
+
+/* question card - ruled paper feel */
+.qcard{
+  background:repeating-linear-gradient(var(--card),var(--card) 27px, var(--paper-line) 28px);
+  background-color:var(--card);
+  border:1px solid var(--border); border-radius:var(--radius); padding:20px 22px; margin-bottom:14px;
+}
+.qhead{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;}
+.qnum{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--muted);}
+.qtext{font-size:15px; margin:6px 0 12px; font-weight:500;}
+.opt{display:flex; gap:10px; align-items:flex-start; padding:5px 0; font-size:13.8px;}
+.opt .oletter{width:20px;height:20px; border:1.5px solid var(--border); border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0;}
+.opt.correct .oletter{background:var(--green); border-color:var(--green); color:#fff;}
+.qactions{display:flex; gap:6px; margin-top:12px;}
+.qmeta-right{text-align:right;}
+
+.editrow{display:flex; gap:8px; align-items:center; margin-bottom:8px;}
+.editrow input[type=text]{flex:1;}
+.editrow .radiomark{cursor:pointer;}
+
+/* ---------- publish ---------- */
+.linkbox{display:flex; gap:8px; margin-top:14px;}
+.linkbox input{font-family:'IBM Plex Mono',monospace; font-size:12.5px;}
+
+/* ---------- student attempt ---------- */
+.examshell{max-width:760px; margin:0 auto; padding:26px 22px 90px;}
+.exambar{
+  position:sticky; top:0; background:var(--paper); z-index:10;
+  display:flex; justify-content:space-between; align-items:center;
+  padding:14px 0; border-bottom:1px solid var(--border); margin-bottom:22px;
+}
+.timerbox{font-family:'IBM Plex Mono',monospace; font-size:19px; font-weight:600; padding:6px 14px; border:1px solid var(--ink); border-radius:4px;}
+.timerbox.low{color:var(--red); border-color:var(--red); background:var(--red-soft);}
+.palette{display:flex; flex-wrap:wrap; gap:7px; margin:22px 0;}
+.pnode{
+  width:32px;height:32px; border-radius:4px; border:1px solid var(--border); background:#fff;
+  display:flex; align-items:center; justify-content:center; font-size:12px; cursor:pointer; font-family:'IBM Plex Mono',monospace;
+}
+.pnode.answered{background:var(--green); color:#fff; border-color:var(--green);}
+.pnode.review{background:var(--amber); color:#fff; border-color:var(--amber);}
+.pnode.current{outline:2px solid var(--ink); outline-offset:1px;}
+.optbig{
+  display:flex; gap:12px; align-items:flex-start; padding:13px 15px; border:1px solid var(--border);
+  border-radius:var(--radius); margin-bottom:9px; cursor:pointer; background:#fff;
+}
+.optbig:hover{border-color:var(--ink-soft);}
+.optbig.sel{border-color:var(--ink); background:var(--amber-soft);}
+.optbig .oletter{width:24px;height:24px;border:1.5px solid var(--border);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
+.optbig.sel .oletter{background:var(--ink); color:#fff; border-color:var(--ink);}
+.examfoot{display:flex; justify-content:space-between; align-items:center; margin-top:24px;}
+
+.instr{max-width:640px; margin:60px auto; text-align:left;}
+.instr ul{padding-left:20px; color:var(--ink-soft); font-size:14px; line-height:1.8;}
+.warnbanner{background:var(--red-soft); color:var(--red); padding:10px 14px; border-radius:4px; font-size:13px; margin-bottom:16px;}
+
+.resultcard{max-width:520px; margin:40px auto; padding:34px; text-align:center;}
+.resultcard .score{font-family:'Source Serif 4',serif; font-size:52px; font-weight:700; margin:6px 0;}
+.resultgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:22px 0;}
+.resultgrid div{padding:12px; border:1px solid var(--border); border-radius:4px;}
+.resultgrid .n{font-size:20px; font-weight:700; font-family:'Source Serif 4',serif;}
+.resultgrid .l{font-size:11px; color:var(--muted); margin-top:2px;}
+.pill{display:inline-block; padding:4px 14px; border-radius:20px; font-weight:700; font-size:13px;}
+.pill.pass{background:var(--green-soft); color:var(--green);}
+.pill.fail{background:var(--red-soft); color:var(--red);}
+
+table.results{width:100%; border-collapse:collapse; font-size:13.5px;}
+table.results th{text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:8px 10px; border-bottom:1px solid var(--border);}
+table.results td{padding:9px 10px; border-bottom:1px solid var(--paper-line);}
+table.results tr:hover td{background:#FBF9F4;}
+
+.modalbg{position:fixed; inset:0; background:rgba(27,36,48,.45); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px;}
+.modal{background:#fff; border-radius:6px; max-width:560px; width:100%; max-height:88vh; overflow:auto; padding:24px;}
+.authshell{max-width:400px; margin:70px auto 0; padding-bottom:60px;}
+.authmsg{background:var(--red-soft); color:var(--red); padding:9px 12px; border-radius:4px; font-size:13px; margin-bottom:12px;}
+.synctag{font-size:11px; padding:2px 9px; border-radius:20px; font-weight:700;}
+.synctag.online{background:var(--green-soft); color:var(--green);}
+.synctag.offline{background:#EDEAE0; color:var(--muted);}
+.fullload{display:flex; align-items:center; justify-content:center; min-height:60vh; color:var(--muted);}
+@media (max-width:720px){
+  .fieldgrid{grid-template-columns:1fr;}
+  .stat-row{grid-template-columns:repeat(2,1fr);}
+  .resultgrid{grid-template-columns:1fr 1fr;}
+  .topnav{display:none;}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ============================================================
+   TESTLINK — Phase-1 client-side prototype
+   No backend: test data is embedded (base64) in the shareable
+   link itself, so any device can open it and take the test.
+   Results are saved locally for the teacher's own browser, and
+   students can also send back a "result code" file the teacher
+   imports into the Results tab — this lets results travel
+   across devices without a server.
+   ============================================================ */
+
+/* ---------------- utils ---------------- */
+const uid = (p='id') => p+'_'+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4);
+function b64encode(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
+function b64decode(str){ return JSON.parse(decodeURIComponent(escape(atob(str)))); }
+function fmtTime(ms){
+  if(ms<0) ms=0;
+  const s=Math.floor(ms/1000);
+  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+  return (h>0?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
+}
+function fmtDateTime(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}); }
+function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function toast(msg){
+  const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
+  document.body.appendChild(t); setTimeout(()=>t.remove(),2600);
+}
+function letter(i){ return String.fromCharCode(65+i); }
+
+/* ---------------- Firebase (optional) ----------------
+   Paste your project's config below to turn on real accounts and
+   cross-device sync. Leave it untouched and the app runs exactly
+   as before, on localStorage only, for local demos/grading. */
+const firebaseConfig = {
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
+};
+const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
+let auth=null, dbf=null, currentUser=null, authReady=false;
+if(FIREBASE_ENABLED){
+  firebase.initializeApp(firebaseConfig);
+  auth = firebase.auth();
+  dbf = firebase.firestore();
+}
+
+/* ---------------- storage ----------------
+   localCache always holds {tests:{}, results:{}} in memory — every
+   view reads from it synchronously via getDB(). When Firebase is on,
+   Firestore onSnapshot listeners keep localCache in sync in the
+   background and writes go to Firestore; when it's off, localCache
+   is just localStorage read into memory. */
+const DB_KEY='testlink_db_v1';
+let localCache = {tests:{}, results:{}};
+function getDB(){ return localCache; }
+function loadLocalStorageCache(){
+  try{ localCache = JSON.parse(localStorage.getItem(DB_KEY)) || {tests:{}, results:{}}; }
+  catch(e){ localCache = {tests:{}, results:{}}; }
+}
+function persistLocalStorageCache(){ localStorage.setItem(DB_KEY, JSON.stringify(localCache)); }
+
+function saveTest(test){
+  localCache.tests[test.id]=test; // full version (with answers) stays in the teacher's own memory/UI
+  if(FIREBASE_ENABLED && currentUser){
+    const isPublished = test.status==='published';
+    // Once a test is published, its Firestore doc becomes publicly readable
+    // (students aren't logged in), so the answer key must NOT travel with it.
+    const publicQuestions = test.questions.map(q=>{
+      if(!isPublished) return q; // drafts are owner-only readable — safe to keep everything
+      const {correct, ...rest} = q; return rest;
+    });
+    const publicDoc = {...test, ownerId: currentUser.uid, questions: publicQuestions};
+    dbf.collection('tests').doc(test.id).set(publicDoc)
+      .catch(err=>toast('Could not sync to the cloud: '+err.message));
+    if(isPublished){
+      const answerKey={}; test.questions.forEach(q=>{ answerKey[q.id]=q.correct||[]; });
+      dbf.collection('tests').doc(test.id).collection('private').doc('answerKey').set(answerKey).catch(()=>{});
+    }
+  } else {
+    persistLocalStorageCache();
+  }
+}
+// When opening a published test for editing, the local/synced copy has had its
+// answer key stripped (see saveTest above) — pull it back from the owner-only
+// private subcollection so the verify/edit screens work normally.
+async function loadTestForEdit(testId){
+  let test = getDB().tests[testId];
+  if(!test) return null;
+  const missingAnswers = FIREBASE_ENABLED && test.questions.length && test.questions.some(q=>q.correct===undefined);
+  if(missingAnswers){
+    try{
+      const keyDoc = await dbf.collection('tests').doc(testId).collection('private').doc('answerKey').get();
+      test = JSON.parse(JSON.stringify(test));
+      const key = keyDoc.exists? keyDoc.data() : {};
+      test.questions.forEach(q=>{ q.correct = key[q.id] || []; });
+    }catch(e){ toast('Could not load answer key: '+e.message); }
+  }
+  return test;
+}
+function deleteTest(id){
+  delete localCache.tests[id]; delete localCache.results[id];
+  if(FIREBASE_ENABLED && currentUser){
+    dbf.collection('tests').doc(id).delete().catch(()=>{});
+  } else {
+    persistLocalStorageCache();
+  }
+}
+function addResult(testId, result){
+  if(!localCache.results[testId]) localCache.results[testId]=[];
+  if(!localCache.results[testId].some(r=>r.id===result.id)) localCache.results[testId].push(result);
+  if(FIREBASE_ENABLED){
+    dbf.collection('tests').doc(testId).collection('results').doc(result.id).set(result)
+      .catch(()=>toast('Could not sync this result online — please use the download button instead.'));
+  } else {
+    persistLocalStorageCache();
+  }
+}
+function subscribeTeacherData(){
+  if(window._unsubTests) window._unsubTests();
+  window._unsubTests = dbf.collection('tests').where('ownerId','==',currentUser.uid)
+    .onSnapshot(snap=>{
+      const tests={};
+      snap.forEach(doc=>{ const d=doc.data(); d.id=doc.id; tests[doc.id]=d; });
+      localCache.tests=tests;
+      render();
+    }, err=>toast('Sync error: '+err.message));
+}
+function subscribeResults(testId){
+  if(window._unsubResults) window._unsubResults();
+  window._unsubResults = dbf.collection('tests').doc(testId).collection('results')
+    .onSnapshot(snap=>{
+      const arr=[]; snap.forEach(d=>arr.push(d.data()));
+      localCache.results[testId]=arr;
+      if(location.hash===`#/results/${testId}`) render();
+    }, err=>toast('Sync error: '+err.message));
+}
+
+/* ---------------- question paper parser ---------------- */
+// Best-effort text parser: finds "1. question", options "A) text", "Answer: B"
+function parseQuestionPaper(raw){
+  const lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
+  const qRe = /^(?:Q\.?\s*)?(\d{1,3})[\.\)\:]\s+(.*)/i;
+  const oRe = /^\(?([A-Da-d])\)?[\.\)\:]\s+(.*)/;
+  const aRe = /^(?:Ans(?:wer)?|Correct\s*Answer)\s*[:\-]?\s*\(?([A-Da-d])\)?/i;
+  const tfRe = /^(True|False)\s*\/\s*(True|False)/i;
+  let questions=[]; let cur=null;
+  for(const line of lines){
+    const qm = line.match(qRe);
+    const om = line.match(oRe);
+    const am = line.match(aRe);
+    if(qm && (!cur || cur.options.length>0 || cur.text==='')){
+      if(cur) questions.push(cur);
+      cur = {text: qm[2], options: [], answerLetter:null};
+      continue;
+    }
+    if(om && cur){
+      cur.options.push(om[2]);
+      continue;
+    }
+    if(am && cur){
+      cur.answerLetter = am[1].toUpperCase();
+      continue;
+    }
+    if(cur && cur.options.length===0){
+      cur.text += ' ' + line; // wrap multi-line question text
+    }
+  }
+  if(cur) questions.push(cur);
+
+  return questions.map(q=>{
+    const opts = q.options.map((t,i)=>({id: 'o'+i, text:t}));
+    let correct = [];
+    if(q.answerLetter){
+      const idx = q.answerLetter.charCodeAt(0)-65;
+      if(opts[idx]) correct=[opts[idx].id];
+    }
+    const lowConfidence = opts.length<2 || correct.length===0;
+    return {
+      id: uid('q'),
+      text: q.text.trim(),
+      type: opts.length? 'single':'single',
+      options: opts.length? opts : [{id:'o0',text:'Option A'},{id:'o1',text:'Option B'}],
+      correct: correct.length? correct : [],
+      marks: 1,
+      negativeMarks: 0,
+      status: lowConfidence ? 'review' : 'review' // teacher must verify everything, low-confidence flagged separately
+      , lowConfidence
+    };
+  });
+}
+
+/* ---------------- default test object ---------------- */
+function newTest(){
+  return {
+    id: uid('t'),
+    status:'draft', // draft | published
+    createdAt: Date.now(),
+    meta:{ name:'Untitled Test' },
+    questions: [],
+    config:{
+      duration: 30,           // minutes
+      startAt: null,          // ts, exam opens
+      deadlineAt: null,       // ts, no new starts after this / hard stop
+      attempts: 1,
+      negativeMarking: false,
+      negativeValue: 0.25,
+      randomizeQ: false,
+      randomizeOpt: false,
+      allowReview: true,
+      resultVisibility: 'immediate', // immediate | scoreOnly | hidden
+      showAnswers: false,
+      passPercent: 40
+    }
+  };
+}
+
+/* ---------------- app state / router ---------------- */
+let wizardDraft = null; // in-memory test being created/edited
+let attemptState = null; // in-memory current student attempt
+
+function render(){
+  const hash = location.hash || '#/dashboard';
+  const app = document.getElementById('app');
+
+  if(hash.startsWith('#/attempt')){
+    app.innerHTML = renderAttemptShell();
+    mountAttempt(hash);
+    return;
+  }
+
+  if(FIREBASE_ENABLED && !authReady){
+    app.innerHTML = `<div class="fullload"><span class="spinner"></span>Loading…</div>`;
+    return;
+  }
+  if(FIREBASE_ENABLED && !currentUser){
+    app.innerHTML = `
+      <div class="topbar">
+        <div class="brand"><span class="mark">T</span><span class="name">TestLink</span></div>
+      </div>
+      <div class="shell"><div class="authshell">${renderAuthGate()}</div></div>`;
+    return;
+  }
+
+  // teacher area: shared topbar
+  let body='';
+  let route='dashboard';
+  if(hash.startsWith('#/create')) { body=viewWizard(); route='create'; }
+  else if(hash.startsWith('#/results/')) {
+    const tid=hash.split('/')[2];
+    if(FIREBASE_ENABLED) subscribeResults(tid);
+    body=viewResults(tid); route='dashboard';
+  }
+  else if(hash.startsWith('#/edit/')) {
+    const tid = hash.split('/')[2];
+    const cached = getDB().tests[tid];
+    const ready = cached && (!FIREBASE_ENABLED || !cached.questions.length || cached.questions.every(q=>q.correct!==undefined));
+    if(ready){
+      wizardDraft = cached; body=viewWizard(); route='create';
+    } else if(cached) {
+      loadTestForEdit(tid).then(t=>{ wizardDraft=t; render(); });
+      body = `<div class="fullload"><span class="spinner"></span>Loading test…</div>`; route='create';
+    } else {
+      body = `<div class="empty card"><h3>Test not found</h3></div>`;
+    }
+  }
+  else { body=viewDashboard(); route='dashboard'; }
+
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="brand" onclick="location.hash='#/dashboard'">
+        <span class="mark">T</span>
+        <span class="name">TestLink</span>
+        <span class="tag">&nbsp;· teacher console</span>
+      </div>
+      <div class="topnav">
+        <span class="synctag ${FIREBASE_ENABLED?'online':'offline'}">${FIREBASE_ENABLED? '● synced':'○ local only'}</span>
+        <span class="${route==='dashboard'?'active':''}" onclick="location.hash='#/dashboard'">Dashboard</span>
+        <span class="${route==='create'?'active':''}" onclick="startNewTest()">Create Test</span>
+        ${FIREBASE_ENABLED? `<span onclick="doLogout()">Sign out (${esc(currentUser.email)})</span>`:''}
+      </div>
+    </div>
+    <div class="shell wide">${body}</div>
+  `;
+  wireDashboardEvents();
+  if(route==='create') afterWizardRender();
+}
+window.addEventListener('hashchange', render);
+window.addEventListener('DOMContentLoaded', render);
+
+if(FIREBASE_ENABLED){
+  auth.onAuthStateChanged(user=>{
+    currentUser = user; authReady = true;
+    if(user) subscribeTeacherData();
+    else localCache = {tests:{}, results:{}};
+    render();
+  });
+} else {
+  loadLocalStorageCache();
+}
+
+/* ---------------- auth screens (only used when Firebase is on) ---------------- */
+function renderAuthGate(){
+  return `
+    <div class="card pad">
+      <h2 style="margin-bottom:4px;">Teacher sign in</h2>
+      <p class="muted small" style="margin-bottom:16px;">Your tests and results sync to your account across every device.</p>
+      <div id="authMsg"></div>
+      <label class="field">Email</label>
+      <input type="text" id="authEmail" autocomplete="username">
+      <div style="height:10px;"></div>
+      <label class="field">Password</label>
+      <input type="text" id="authPass" autocomplete="current-password" style="-webkit-text-security:disc;">
+      <div class="row" style="margin-top:16px;">
+        <button class="btn amber" onclick="doLogin()">Sign in</button>
+        <button class="btn secondary" onclick="doSignup()">Create account</button>
+      </div>
+    </div>`;
+}
+function authError(msg){ document.getElementById('authMsg').innerHTML = `<div class="authmsg">${esc(msg)}</div>`; }
+function doLogin(){
+  const email=document.getElementById('authEmail').value.trim();
+  const pass=document.getElementById('authPass').value;
+  auth.signInWithEmailAndPassword(email,pass).catch(err=>authError(err.message));
+}
+function doSignup(){
+  const email=document.getElementById('authEmail').value.trim();
+  const pass=document.getElementById('authPass').value;
+  if(pass.length<6){ authError('Password must be at least 6 characters.'); return; }
+  auth.createUserWithEmailAndPassword(email,pass).catch(err=>authError(err.message));
+}
+function doLogout(){ auth.signOut(); }
+
+function startNewTest(){ wizardDraft=newTest(); location.hash='#/create'; }
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
+function viewDashboard(){
+  const db=getDB();
+  const tests=Object.values(db.tests).sort((a,b)=>b.createdAt-a.createdAt);
+  const drafts=tests.filter(t=>t.status==='draft');
+  const published=tests.filter(t=>t.status==='published');
+  const totalStudents = Object.values(db.results).reduce((a,r)=>a+r.length,0);
+
+  return `
+    <div class="dash-head">
+      <div>
+        <h1 style="font-size:26px;">Teacher Dashboard</h1>
+        <p class="muted" style="margin-top:6px;">Upload a paper once, verify it, share a link — the rest runs itself.</p>
+      </div>
+      <button class="btn amber" onclick="startNewTest()">+ Create New Test</button>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num">${tests.length}</div><div class="lbl">Total tests</div></div>
+      <div class="stat"><div class="num">${published.length}</div><div class="lbl">Published</div></div>
+      <div class="stat"><div class="num">${drafts.length}</div><div class="lbl">Drafts</div></div>
+      <div class="stat"><div class="num">${totalStudents}</div><div class="lbl">Submissions recorded</div></div>
+    </div>
+
+    <div class="section-title">Published tests</div>
+    <div class="test-list">
+      ${published.length? published.map(t=>testRow(t,db)).join('') : `<div class="empty card"><h3>Nothing published yet</h3><p>Publish a test to get a shareable link for students.</p></div>`}
+    </div>
+
+    <div class="section-title">Drafts</div>
+    <div class="test-list">
+      ${drafts.length? drafts.map(t=>testRow(t,db)).join('') : `<div class="empty card"><h3>No drafts</h3><p>Start a new test and it will appear here until you publish it.</p></div>`}
+    </div>
+  `;
+}
+function testRow(t,db){
+  const n = (db.results[t.id]||[]).length;
+  return `
+    <div class="test-row">
+      <div class="ti">
+        <h4>${esc(t.meta.name)}</h4>
+        <div class="meta">${t.questions.length} questions · ${n} submission${n===1?'':'s'} · created ${new Date(t.createdAt).toLocaleDateString()}
+          <span class="badge ${t.status==='published'?'published':'draft'}" style="margin-left:8px;">${t.status}</span>
+        </div>
+      </div>
+      <div class="ta">
+        <button class="btn secondary small" onclick="location.hash='#/edit/${t.id}'">Open</button>
+        <button class="btn secondary small" onclick="location.hash='#/results/${t.id}'">Results</button>
+        <button class="btn ghost small" onclick="dupTest('${t.id}')">Duplicate</button>
+        <button class="btn danger small" onclick="removeTest('${t.id}')">Delete</button>
+      </div>
+    </div>`;
+}
+function wireDashboardEvents(){
+  window.dupTest = (id)=>{
+    const db=getDB(); const src=db.tests[id]; if(!src) return;
+    const copy=JSON.parse(JSON.stringify(src));
+    copy.id=uid('t'); copy.status='draft'; copy.createdAt=Date.now(); copy.meta.name=src.meta.name+' (copy)';
+    saveTest(copy); toast('Duplicated'); render();
+  };
+  window.removeTest = (id)=>{
+    if(!confirm('Delete this test and all its results? This cannot be undone.')) return;
+    deleteTest(id); toast('Deleted'); render();
+  };
+}
+
+/* ============================================================
+   CREATE / EDIT WIZARD
+   ============================================================ */
+let wizardStep = 'upload'; // upload -> verify -> configure -> preview
+function viewWizard(){
+  if(!wizardDraft) wizardDraft = newTest();
+  const steps=[['upload','1. Upload'],['verify','2. Verify'],['configure','3. Configure'],['preview','4. Publish']];
+  return `
+    <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <input type="text" value="${esc(wizardDraft.meta.name)}" style="font-family:'Source Serif 4',serif; font-size:20px; font-weight:700; border:none; background:transparent; padding:4px 0; max-width:480px;"
+        onchange="wizardDraft.meta.name=this.value; persistDraft();" />
+      <span class="badge ${wizardDraft.status==='published'?'published':'draft'}">${wizardDraft.status}</span>
+    </div>
+    <div class="steps">
+      ${steps.map(([k,label])=>`<div class="step ${wizardStep===k?'on':''}" onclick="wizardStep='${k}'; render();">${label}</div>`).join('')}
+    </div>
+    <div id="wizbody">${wizardStep==='upload'?stepUpload(): wizardStep==='verify'?stepVerify(): wizardStep==='configure'?stepConfigure(): stepPreview()}</div>
+  `;
+}
+function afterWizardRender(){ if(wizardStep==='upload') setupDragDrop(); }
+function persistDraft(){ saveTest(wizardDraft); }
+
+/* ---- Step 1: Upload ---- */
+function stepUpload(){
+  return `
+    <div class="card pad">
+      <h3 style="font-size:16px; margin-bottom:4px;">Upload or paste the question paper</h3>
+      <p class="muted small" style="margin-bottom:16px;">Drop a PDF, a photo/scan of the paper, or a .txt file — or just paste the text directly. Use a format like <span class="mono">1. Question text</span>, options as <span class="mono">A) ...</span>, and optionally <span class="mono">Answer: B</span> so the parser can pick them up. Nothing becomes final until you verify it in the next step.</p>
+
+      <div class="dropzone" id="dz">
+        <div style="font-size:14px; margin-bottom:8px;">Drag &amp; drop a PDF, image, or .txt file here, or</div>
+        <input type="file" id="fileIn" accept=".txt,.pdf,image/*" style="display:none" onchange="handleFileUpload(this.files[0])">
+        <button class="btn secondary small" onclick="document.getElementById('fileIn').click()">Choose file</button>
+        <div id="fileStatus"></div>
+        <div class="progressline" id="extractProgress"></div>
+      </div>
+
+      <label class="field">Or paste question paper text</label>
+      <textarea id="pasteArea" rows="12" placeholder="1. Which of the following is a method of underground mining?
+A) Open cast mining
+B) Room and pillar mining
+C) Hydraulic mining
+D) Placer mining
+Answer: B
+
+2. ..."></textarea>
+
+      <div class="row" style="margin-top:16px; justify-content:space-between;">
+        <button class="btn secondary" onclick="addBlankQuestion()">+ Add a question manually instead</button>
+        <button class="btn amber" id="extractBtn" onclick="runExtraction()">Extract Questions →</button>
+      </div>
+    </div>
+  `;
+}
+function setProgress(msg){
+  const p=document.getElementById('extractProgress'); if(p) p.innerHTML = msg? `<span class="spinner"></span>${msg}` : '';
+}
+function setFilePill(name){
+  const s=document.getElementById('fileStatus');
+  if(s) s.innerHTML = name? `<div class="filepill">📄 ${esc(name)} <button onclick="document.getElementById('fileStatus').innerHTML=''">✕</button></div>` : '';
+}
+async function handleFileUpload(file){
+  if(!file) return;
+  setFilePill(file.name);
+  const name = file.name.toLowerCase();
+  try{
+    if(name.endsWith('.txt') || file.type==='text/plain'){
+      const text = await file.text();
+      document.getElementById('pasteArea').value = text;
+      toast('Text file loaded — click Extract');
+    } else if(name.endsWith('.pdf') || file.type==='application/pdf'){
+      await extractPdfFile(file);
+    } else if(file.type.startsWith('image/')){
+      await extractImageFile(file);
+    } else {
+      toast('Unsupported file type — try .txt, .pdf, or an image');
+    }
+  } catch(err){
+    console.error(err);
+    setProgress('');
+    toast('Could not read that file — try pasting the text instead');
+  }
+}
+async function extractPdfFile(file){
+  if(typeof pdfjsLib === 'undefined'){ toast('PDF reader failed to load — check your internet connection'); return; }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  setProgress('Reading PDF…');
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  let fullText='';
+  let hasText=false;
+  for(let i=1;i<=pdf.numPages;i++){
+    setProgress(`Reading page ${i} of ${pdf.numPages}…`);
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map(it=>it.str).join(' ');
+    if(pageText.trim().length>0) hasText=true;
+    fullText += pageText + '\n';
+  }
+  if(!hasText){
+    // scanned PDF with no embedded text layer — fall back to OCR on rendered pages
+    setProgress('No embedded text found — running OCR on scanned pages, this can take a minute…');
+    fullText = await ocrPdfPages(pdf);
+  }
+  document.getElementById('pasteArea').value = cleanupExtractedText(fullText);
+  setProgress('');
+  toast('PDF text extracted — review it below, then click Extract Questions');
+}
+async function ocrPdfPages(pdf){
+  let text='';
+  for(let i=1;i<=pdf.numPages;i++){
+    setProgress(`OCR on page ${i} of ${pdf.numPages}…`);
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({scale:2});
+    const canvas = document.createElement('canvas');
+    canvas.width=viewport.width; canvas.height=viewport.height;
+    await page.render({canvasContext:canvas.getContext('2d'), viewport}).promise;
+    const {data:{text:pageText}} = await Tesseract.recognize(canvas, 'eng', {
+      logger: m=>{ if(m.status==='recognizing text') setProgress(`OCR on page ${i} of ${pdf.numPages} — ${Math.round(m.progress*100)}%`); }
+    });
+    text += pageText + '\n';
+  }
+  return text;
+}
+async function extractImageFile(file){
+  if(typeof Tesseract === 'undefined'){ toast('OCR engine failed to load — check your internet connection'); return; }
+  setProgress('Running OCR on image — this can take up to a minute…');
+  const {data:{text}} = await Tesseract.recognize(file, 'eng', {
+    logger: m=>{ if(m.status==='recognizing text') setProgress(`OCR in progress — ${Math.round(m.progress*100)}%`); }
+  });
+  document.getElementById('pasteArea').value = cleanupExtractedText(text);
+  setProgress('');
+  toast('Text extracted from image — review it below, then click Extract Questions');
+}
+function cleanupExtractedText(text){
+  // collapse excess blank lines/spaces that PDF/OCR extraction tends to introduce
+  return text.replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
+}
+function setupDragDrop(){
+  const dz=document.getElementById('dz'); if(!dz) return;
+  ['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev, e=>{ e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev, e=>{ e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', e=>{
+    const file = e.dataTransfer.files[0];
+    if(file) handleFileUpload(file);
+  });
+}
+function runExtraction(){
+  const text = document.getElementById('pasteArea').value.trim();
+  if(!text){ toast('Paste or upload some text first'); return; }
+  const extracted = parseQuestionPaper(text);
+  if(extracted.length===0){ toast('No questions detected — check the format, or add manually'); return; }
+  wizardDraft.questions = wizardDraft.questions.concat(extracted);
+  persistDraft();
+  wizardStep='verify';
+  render();
+  toast(`${extracted.length} question(s) extracted — please verify each one`);
+}
+function addBlankQuestion(){
+  wizardDraft.questions.push({
+    id: uid('q'), text:'New question text', type:'single',
+    options:[{id:'o0',text:'Option A'},{id:'o1',text:'Option B'},{id:'o2',text:'Option C'},{id:'o3',text:'Option D'}],
+    correct:[], marks:1, negativeMarks:0, status:'review', lowConfidence:true
+  });
+  persistDraft(); wizardStep='verify'; render();
+}
+
+/* ---- Step 2: Verify ---- */
+function stepVerify(){
+  const qs = wizardDraft.questions;
+  const needsReview = qs.filter(q=>q.status==='review').length;
+  return `
+    <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div>
+        <strong>${qs.length}</strong> question(s) ·
+        <span style="color:${needsReview? 'var(--red)':'var(--green)'}">${needsReview} need review</span>
+      </div>
+      <button class="btn secondary small" onclick="addBlankQuestion()">+ Add question</button>
+    </div>
+    ${qs.length===0? `<div class="empty card"><h3>No questions yet</h3><p>Go back and upload a paper, or add one manually.</p></div>` :
+      qs.map((q,i)=>questionCard(q,i)).join('')}
+    <div class="row" style="justify-content:space-between; margin-top:20px;">
+      <button class="btn secondary" onclick="wizardStep='upload'; render();">← Back</button>
+      <button class="btn amber" ${qs.length===0?'disabled':''} onclick="verifyAllAndContinue()">Continue to Configure →</button>
+    </div>
+  `;
+}
+function verifyAllAndContinue(){
+  const stillReview = wizardDraft.questions.filter(q=>q.status==='review');
+  if(stillReview.length>0){
+    if(!confirm(`${stillReview.length} question(s) are still marked "Needs Review". Continue anyway?`)) return;
+  }
+  wizardStep='configure'; persistDraft(); render();
+}
+function questionCard(q,i){
+  const badgeClass = q.status==='verified'?'verified':(q.status==='edited'?'edited':'review');
+  return `
+  <div class="qcard">
+    <div class="qhead">
+      <span class="qnum">QUESTION ${i+1}${q.lowConfidence? ' · low extraction confidence':''}</span>
+      <span class="badge ${badgeClass}">${q.status==='verified'?'✓ Verified':(q.status==='edited'?'✎ Edited':'⚠ Needs Review')}</span>
+    </div>
+    <div class="qtext">${esc(q.text)}</div>
+    ${q.options.map(o=>`<div class="opt ${q.correct.includes(o.id)?'correct':''}"><span class="oletter">${o.id===q.options[q.options.indexOf(o)].id? letter(q.options.indexOf(o)):''}</span>${esc(o.text)}</div>`).join('')}
+    <div class="row small muted" style="margin-top:8px;">Marks: ${q.marks}${q.negativeMarks? ' · Negative: -'+q.negativeMarks:''}</div>
+    <div class="qactions">
+      <button class="btn secondary small" onclick="openEditModal('${q.id}')">Edit</button>
+      <button class="btn secondary small" onclick="markVerified('${q.id}')">Mark Verified</button>
+      <button class="btn ghost small" onclick="moveQ('${q.id}',-1)">↑</button>
+      <button class="btn ghost small" onclick="moveQ('${q.id}',1)">↓</button>
+      <button class="btn danger small" onclick="deleteQ('${q.id}')">Delete</button>
+    </div>
+  </div>`;
+}
+function findQ(id){ return wizardDraft.questions.find(q=>q.id===id); }
+function markVerified(id){ const q=findQ(id); q.status='verified'; q.lowConfidence=false; persistDraft(); render(); }
+function moveQ(id,dir){
+  const arr=wizardDraft.questions; const idx=arr.findIndex(q=>q.id===id);
+  const ni=idx+dir; if(ni<0||ni>=arr.length) return;
+  [arr[idx],arr[ni]]=[arr[ni],arr[idx]]; persistDraft(); render();
+}
+function deleteQ(id){
+  if(!confirm('Delete this question?')) return;
+  wizardDraft.questions = wizardDraft.questions.filter(q=>q.id!==id); persistDraft(); render();
+}
+function openEditModal(id){
+  const q=findQ(id);
+  const modal=document.createElement('div');
+  modal.className='modalbg';
+  modal.innerHTML=`
+    <div class="modal">
+      <h3 style="margin-bottom:14px;">Edit question</h3>
+      <label class="field">Question text</label>
+      <textarea id="mq_text" rows="3" style="font-family:Inter,sans-serif;">${esc(q.text)}</textarea>
+      <div class="hr"></div>
+      <label class="field">Options (select the correct one)</label>
+      <div id="mq_opts">
+        ${q.options.map((o,i)=>`
+          <div class="editrow">
+            <span class="radiomark" onclick="setModalCorrect('${o.id}')" id="mk_${o.id}" style="width:20px;height:20px;border:1.5px solid var(--border);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;${q.correct.includes(o.id)?'background:var(--green);border-color:var(--green);color:#fff;':''}">${letter(i)}</span>
+            <input type="text" id="mo_${o.id}" value="${esc(o.text)}">
+            <button class="btn ghost small" onclick="removeModalOpt('${o.id}')">✕</button>
+          </div>`).join('')}
+      </div>
+      <button class="btn secondary small" onclick="addModalOpt()">+ Add option</button>
+      <div class="hr"></div>
+      <div class="fieldgrid">
+        <div><label class="field">Marks</label><input type="number" id="mq_marks" value="${q.marks}" min="0" step="0.5"></div>
+        <div><label class="field">Negative marks (if wrong)</label><input type="number" id="mq_neg" value="${q.negativeMarks}" min="0" step="0.25"></div>
+      </div>
+      <div class="row" style="justify-content:flex-end; margin-top:10px;">
+        <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Cancel</button>
+        <button class="btn amber" onclick="saveModal('${q.id}')">Save changes</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  window._modalCorrect = new Set(q.correct);
+}
+function setModalCorrect(oid){
+  // single-answer toggle (radio behaviour)
+  window._modalCorrect = new Set([oid]);
+  document.querySelectorAll('#mq_opts .radiomark').forEach(el=>{ el.style.background=''; el.style.borderColor='var(--border)'; el.style.color=''; });
+  const el=document.getElementById('mk_'+oid); el.style.background='var(--green)'; el.style.borderColor='var(--green)'; el.style.color='#fff';
+}
+function addModalOpt(){
+  const wrap=document.getElementById('mq_opts');
+  const nid='o'+Date.now().toString(36).slice(-4);
+  const div=document.createElement('div'); div.className='editrow';
+  div.innerHTML=`<span class="radiomark" onclick="setModalCorrect('${nid}')" id="mk_${nid}" style="width:20px;height:20px;border:1.5px solid var(--border);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">?</span>
+    <input type="text" id="mo_${nid}" value="New option"><button class="btn ghost small" onclick="removeModalOpt('${nid}')">✕</button>`;
+  wrap.appendChild(div);
+}
+function removeModalOpt(oid){ const row=document.getElementById('mo_'+oid).closest('.editrow'); row.remove(); if(window._modalCorrect) window._modalCorrect.delete(oid); }
+function saveModal(qid){
+  const q=findQ(qid);
+  q.text=document.getElementById('mq_text').value.trim();
+  const rows=[...document.querySelectorAll('#mq_opts .editrow')];
+  q.options = rows.map(r=>{
+    const input=r.querySelector('input[type=text]');
+    const id = input.id.replace('mo_','');
+    return {id, text: input.value.trim()};
+  });
+  q.correct = [...(window._modalCorrect||[])].filter(id=>q.options.some(o=>o.id===id));
+  q.marks = parseFloat(document.getElementById('mq_marks').value)||1;
+  q.negativeMarks = parseFloat(document.getElementById('mq_neg').value)||0;
+  q.status='edited'; q.lowConfidence=false;
+  persistDraft();
+  document.querySelector('.modalbg').remove();
+  render();
+}
+
+/* ---- Step 3: Configure ---- */
+function stepConfigure(){
+  const c=wizardDraft.config;
+  const toLocalInput = ts => ts? new Date(ts - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16) : '';
+  return `
+    <div class="card pad">
+      <div class="fieldgrid">
+        <div><label class="field">Test duration (minutes)</label><input type="number" min="1" value="${c.duration}" onchange="c_set('duration', parseInt(this.value)||1)"></div>
+        <div><label class="field">Allowed attempts per student</label><input type="number" min="1" value="${c.attempts}" onchange="c_set('attempts', parseInt(this.value)||1)"></div>
+        <div><label class="field">Opens at</label><input type="datetime-local" value="${toLocalInput(c.startAt)}" onchange="c_setDate('startAt', this.value)"></div>
+        <div><label class="field">Final deadline (no starts after this)</label><input type="datetime-local" value="${toLocalInput(c.deadlineAt)}" onchange="c_setDate('deadlineAt', this.value)"></div>
+        <div><label class="field">Passing percentage</label><input type="number" min="0" max="100" value="${c.passPercent}" onchange="c_set('passPercent', parseInt(this.value)||0)"></div>
+        <div><label class="field">Result visibility</label>
+          <select onchange="c_set('resultVisibility', this.value)">
+            <option value="immediate" ${c.resultVisibility==='immediate'?'selected':''}>Show immediately</option>
+            <option value="scoreOnly" ${c.resultVisibility==='scoreOnly'?'selected':''}>Score only, no answer key</option>
+            <option value="hidden" ${c.resultVisibility==='hidden'?'selected':''}>Hide until teacher releases</option>
+          </select>
+        </div>
+      </div>
+      <div class="hr"></div>
+      <div class="chk"><input type="checkbox" ${c.negativeMarking?'checked':''} onchange="c_set('negativeMarking', this.checked)"> Enable negative marking (uses per-question negative marks, plus default below)</div>
+      ${c.negativeMarking? `<div style="max-width:220px; margin-bottom:6px;"><label class="field">Default negative value</label><input type="number" step="0.25" value="${c.negativeValue}" onchange="c_set('negativeValue', parseFloat(this.value)||0)"></div>`:''}
+      <div class="chk"><input type="checkbox" ${c.randomizeQ?'checked':''} onchange="c_set('randomizeQ', this.checked)"> Randomize question order per student</div>
+      <div class="chk"><input type="checkbox" ${c.randomizeOpt?'checked':''} onchange="c_set('randomizeOpt', this.checked)"> Randomize option order per student</div>
+      <div class="chk"><input type="checkbox" ${c.allowReview?'checked':''} onchange="c_set('allowReview', this.checked)"> Allow students to revisit previous questions</div>
+      <p class="small muted" style="margin-top:14px;">Core rule: a student's available time is <span class="mono">min(duration, deadline − start time)</span>. Starting late never grants extra time beyond the deadline.</p>
+    </div>
+    <div class="row" style="justify-content:space-between; margin-top:20px;">
+      <button class="btn secondary" onclick="wizardStep='verify'; render();">← Back</button>
+      <button class="btn amber" onclick="wizardStep='preview'; persistDraft(); render();">Continue to Preview →</button>
+    </div>
+  `;
+}
+function c_set(k,v){ wizardDraft.config[k]=v; persistDraft(); }
+function c_setDate(k,v){ wizardDraft.config[k] = v? new Date(v).getTime() : null; persistDraft(); }
+
+/* ---- Step 4: Preview & Publish ---- */
+function stepPreview(){
+  const t=wizardDraft;
+  const link = t.status==='published'? buildShareLink(t) : null;
+  const totalMarks = t.questions.reduce((a,q)=>a+q.marks,0);
+  const needsReview = t.questions.filter(q=>q.status==='review').length;
+  return `
+    <div class="card pad">
+      <h3 style="margin-bottom:10px;">${esc(t.meta.name)}</h3>
+      <div class="row small muted" style="gap:22px; margin-bottom:16px;">
+        <span>${t.questions.length} questions</span>
+        <span>${totalMarks} total marks</span>
+        <span>${t.config.duration} min duration</span>
+        <span>Deadline: ${fmtDateTime(t.config.deadlineAt)}</span>
+      </div>
+      ${needsReview>0? `<div class="warnbanner">${needsReview} question(s) still need review — go back to Verify to resolve them.</div>`:''}
+      ${!t.config.deadlineAt? `<div class="warnbanner">Set a final deadline in Configure before publishing.</div>`:''}
+
+      ${t.status!=='published'? `
+        <button class="btn amber" ${(!t.config.deadlineAt)?'disabled':''} onclick="publishTest()">✓ Approve &amp; Publish</button>
+      `: `
+        <div class="badge published" style="margin-bottom:10px;">Published — live for students</div>
+        <div class="linkbox">
+          <input type="text" readonly value="${link}" id="shareLinkInput">
+          <button class="btn secondary small" onclick="copyLink()">Copy link</button>
+        </div>
+        <div class="row" style="margin-top:14px; gap:8px;">
+          <button class="btn secondary small" onclick="location.hash='#/results/${t.id}'">View results →</button>
+          <button class="btn ghost small" onclick="unpublish()">Unpublish (make private again)</button>
+        </div>
+      `}
+    </div>
+    <div class="row" style="justify-content:flex-start; margin-top:20px;">
+      <button class="btn secondary" onclick="wizardStep='configure'; render();">← Back to Configure</button>
+    </div>
+  `;
+}
+function buildShareLink(t){
+  if(FIREBASE_ENABLED && t.slug){
+    return `${location.origin}${location.pathname}#/attempt/${t.slug}`;
+  }
+  const payload = { test: { id:t.id, meta:t.meta, questions:t.questions, config:t.config } };
+  const encoded = b64encode(payload);
+  return `${location.origin}${location.pathname}#/attempt/${encoded}`;
+}
+function publishTest(){
+  wizardDraft.status='published';
+  if(FIREBASE_ENABLED && !wizardDraft.slug){ wizardDraft.slug = Math.random().toString(36).slice(2,9)+Math.random().toString(36).slice(2,5); }
+  persistDraft(); render(); toast('Published! Link ready to share.');
+}
+function unpublish(){ wizardDraft.status='draft'; persistDraft(); render(); }
+function copyLink(){
+  const el=document.getElementById('shareLinkInput'); el.select(); document.execCommand('copy'); toast('Link copied');
+}
+
+/* ============================================================
+   RESULTS + ANALYTICS
+   ============================================================ */
+function viewResults(testId){
+  const db=getDB();
+  const test=db.tests[testId];
+  if(!test) return `<div class="empty card"><h3>Test not found</h3></div>`;
+  const results=(db.results[testId]||[]).sort((a,b)=>b.percentage-a.percentage);
+  const n=results.length;
+  const avg = n? (results.reduce((a,r)=>a+r.percentage,0)/n).toFixed(1):0;
+  const high = n? Math.max(...results.map(r=>r.percentage)).toFixed(1):0;
+  const low = n? Math.min(...results.map(r=>r.percentage)).toFixed(1):0;
+  const passN = results.filter(r=>r.percentage>=test.config.passPercent).length;
+  const passPct = n? ((passN/n)*100).toFixed(0):0;
+
+  // per-question difficulty
+  const qStats = test.questions.map(q=>{
+    let correct=0, attempted=0;
+    results.forEach(r=>{
+      const a=r.answers[q.id];
+      if(a && a.length){ attempted++; if(r.perQuestionCorrect && r.perQuestionCorrect[q.id]) correct++; }
+    });
+    return {id:q.id, text:q.text, rate: attempted? Math.round((correct/attempted)*100): null};
+  }).filter(q=>q.rate!==null);
+  const hardest = qStats.length? qStats.reduce((a,b)=> a.rate<b.rate?a:b): null;
+  const easiest = qStats.length? qStats.reduce((a,b)=> a.rate>b.rate?a:b): null;
+
+  return `
+    <button class="btn ghost small" style="margin-bottom:10px;" onclick="location.hash='#/dashboard'">← Back to dashboard</button>
+    <h2 style="font-size:22px; margin-bottom:4px;">${esc(test.meta.name)} — Results</h2>
+    <p class="muted small" style="margin-bottom:20px;">${n} submission${n===1?'':'s'} recorded in this browser.</p>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num">${avg}%</div><div class="lbl">Class average</div></div>
+      <div class="stat"><div class="num">${high}%</div><div class="lbl">Highest score</div></div>
+      <div class="stat"><div class="num">${low}%</div><div class="lbl">Lowest score</div></div>
+      <div class="stat"><div class="num">${passPct}%</div><div class="lbl">Pass rate (≥${test.config.passPercent}%)</div></div>
+    </div>
+
+    ${hardest||easiest? `<div class="card pad small" style="margin-bottom:20px;">
+      ${hardest? `<div>Most difficult: <strong>${esc(hardest.text.slice(0,70))}</strong> — ${hardest.rate}% correct</div>`:''}
+      ${easiest? `<div style="margin-top:4px;">Most successful: <strong>${esc(easiest.text.slice(0,70))}</strong> — ${easiest.rate}% correct</div>`:''}
+    </div>`:''}
+
+    <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <strong class="small">Submissions</strong>
+      <div class="row" style="gap:8px;">
+        <button class="btn secondary small" onclick="document.getElementById('importIn').click()">Import result file</button>
+        <input type="file" id="importIn" accept=".json" style="display:none" onchange="importResult('${testId}', this.files[0])">
+        <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportCSV('${testId}')">Export CSV</button>
+      </div>
+    </div>
+
+    ${n===0? `<div class="empty card"><h3>No submissions yet</h3><p>Once students submit (in this browser), or you import their result files, they'll show up here.</p></div>`:`
+    <div class="card pad" style="overflow:auto;">
+      <table class="results">
+        <thead><tr><th>Student</th><th>Class/Roll</th><th>Score</th><th>%</th><th>Tab switches</th><th>Time</th><th>Status</th></tr></thead>
+        <tbody>
+          ${results.map(r=>`
+            <tr>
+              <td>${esc(r.student.name)}</td>
+              <td>${esc(r.student.class||'')} ${esc(r.student.roll||'')}</td>
+              <td>${r.score} / ${r.maxScore}</td>
+              <td>${r.percentage.toFixed(1)}%</td>
+              <td>${r.tabSwitches}${r.tabSwitches>2?' ⚠':''}</td>
+              <td>${fmtTime(r.timeTakenMs)}</td>
+              <td>${r.percentage>=test.config.passPercent? '<span class="badge verified">PASS</span>':'<span class="badge review">FAIL</span>'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`}
+  `;
+}
+function importResult(testId, file){
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const result = JSON.parse(e.target.result);
+      addResult(testId, result);
+      toast('Result imported');
+      render();
+    }catch(err){ toast('Could not read that file'); }
+  };
+  reader.readAsText(file);
+}
+function exportCSV(testId){
+  const db=getDB(); const results=db.results[testId]||[];
+  const rows=[['Name','Class','Roll','Score','Max','Percentage','TabSwitches','TimeTakenSec','SubmittedAt']];
+  results.forEach(r=>rows.push([r.student.name, r.student.class||'', r.student.roll||'', r.score, r.maxScore, r.percentage.toFixed(1), r.tabSwitches, Math.round(r.timeTakenMs/1000), new Date(r.submittedAt).toISOString()]));
+  const csv = rows.map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='results.csv'; a.click();
+}
+
+/* ============================================================
+   STUDENT ATTEMPT FLOW
+   ============================================================ */
+function renderAttemptShell(){ return `<div class="examshell" id="examshell"></div>`; }
+
+async function mountAttempt(hash){
+  const el = document.getElementById('examshell');
+  const raw = decodeURIComponent(hash.replace('#/attempt/',''));
+  let test = null;
+
+  // Try the offline format first: full test JSON embedded as base64.
+  try{ test = b64decode(raw).test; }
+  catch(e){ /* not an embedded link — fall through to Firestore lookup below */ }
+
+  if(!test){
+    if(!FIREBASE_ENABLED){
+      el.innerHTML = `<div class="empty"><h3>This link looks broken</h3><p>Ask your teacher to resend it.</p></div>`;
+      return;
+    }
+    el.innerHTML = `<div class="fullload"><span class="spinner"></span>Loading test…</div>`;
+    try{
+      const snap = await dbf.collection('tests').where('slug','==',raw).limit(1).get();
+      if(snap.empty){
+        el.innerHTML = `<div class="empty"><h3>Test not found</h3><p>This link may have been unpublished. Ask your teacher to resend it.</p></div>`;
+        return;
+      }
+      test = snap.docs[0].data(); test.id = snap.docs[0].id;
+    }catch(err){
+      el.innerHTML = `<div class="empty"><h3>Couldn't load this test</h3><p class="small muted">${esc(err.message)}</p></div>`;
+      return;
+    }
+  }
+
+  const storeKey = 'testlink_attempt_'+test.id;
+  let saved = null;
+  try{ saved = JSON.parse(localStorage.getItem(storeKey)); }catch(e){}
+
+  attemptState = saved || { phase:'details', student:{name:'',class:'',roll:'',section:''}, answers:{}, marked:{}, tabSwitches:0, startedAt:null, order:null };
+  attemptState.test = test;
+  attemptState.storeKey = storeKey;
+
+  drawAttempt();
+}
+function persistAttempt(){
+  const {test, ...rest} = attemptState;
+  localStorage.setItem(attemptState.storeKey, JSON.stringify(rest));
+}
+function drawAttempt(){
+  const el = document.getElementById('examshell');
+  const t = attemptState.test; const c = t.config;
+  const now = Date.now();
+
+  if(attemptState.phase==='details'){
+    if(c.deadlineAt && now > c.deadlineAt){
+      el.innerHTML = `<div class="instr center"><h2>Submissions closed</h2><p class="muted">This test is no longer accepting attempts — the deadline has passed.</p></div>`;
+      return;
+    }
+    if(c.startAt && now < c.startAt){
+      el.innerHTML = `<div class="instr center"><h2>Not open yet</h2><p class="muted">This test opens at ${fmtDateTime(c.startAt)}.</p></div>`;
+      return;
+    }
+    el.innerHTML = `
+      <div class="instr">
+        <h2 style="margin-bottom:6px;">${esc(t.meta.name)}</h2>
+        <p class="muted small" style="margin-bottom:22px;">Enter your details to begin.</p>
+        <div class="fieldgrid">
+          <div><label class="field">Full name</label><input type="text" id="s_name" value="${esc(attemptState.student.name)}"></div>
+          <div><label class="field">Roll number</label><input type="text" id="s_roll" value="${esc(attemptState.student.roll)}"></div>
+          <div><label class="field">Class</label><input type="text" id="s_class" value="${esc(attemptState.student.class)}"></div>
+          <div><label class="field">Section</label><input type="text" id="s_section" value="${esc(attemptState.student.section)}"></div>
+        </div>
+        <button class="btn amber" onclick="submitDetails()">Continue →</button>
+      </div>`;
+    return;
+  }
+
+  if(attemptState.phase==='instructions'){
+    const available = Math.min(c.duration*60000, c.deadlineAt? (c.deadlineAt-now):Infinity);
+    el.innerHTML = `
+      <div class="instr">
+        <h2 style="margin-bottom:14px;">Instructions</h2>
+        <ul>
+          <li>You will have <strong>${fmtTime(available)}</strong> to complete this test${c.deadlineAt? ' (limited by the test deadline)':''}.</li>
+          <li>The timer starts the moment you click Start and cannot be paused.</li>
+          <li>${c.allowReview? 'You can move between questions freely and change answers before submitting.':'Questions must be answered in order and cannot be revisited.'}</li>
+          <li>Switching tabs or windows is recorded and shown to your teacher.</li>
+          <li>The test submits automatically when time runs out.</li>
+        </ul>
+        <button class="btn amber" onclick="beginExam()">Start Test</button>
+      </div>`;
+    return;
+  }
+
+  if(attemptState.phase==='exam'){
+    drawExam();
+    return;
+  }
+
+  if(attemptState.phase==='submitted'){
+    drawResult();
+    return;
+  }
+}
+function submitDetails(){
+  attemptState.student = {
+    name: document.getElementById('s_name').value.trim() || 'Anonymous',
+    roll: document.getElementById('s_roll').value.trim(),
+    class: document.getElementById('s_class').value.trim(),
+    section: document.getElementById('s_section').value.trim()
+  };
+  attemptState.phase='instructions';
+  persistAttempt();
+  drawAttempt();
+}
+function shuffle(arr, seed){
+  const a=[...arr]; let s=seed||1;
+  const rnd=()=>{ s=(s*9301+49297)%233280; return s/233280; };
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
+function beginExam(){
+  const t=attemptState.test;
+  const now=Date.now();
+  const seed = now % 100000;
+  let order = t.questions.map(q=>q.id);
+  if(t.config.randomizeQ) order = shuffle(order, seed);
+  attemptState.order = order;
+  attemptState.startedAt = now;
+  attemptState.currentIdx = 0;
+  attemptState.optOrder = {};
+  t.questions.forEach(q=>{
+    attemptState.optOrder[q.id] = t.config.randomizeOpt? shuffle(q.options.map(o=>o.id), seed+q.id.length) : q.options.map(o=>o.id);
+  });
+  attemptState.phase='exam';
+  persistAttempt();
+  drawAttempt();
+  document.addEventListener('visibilitychange', onVisChange);
+  window._examTimer = setInterval(tickTimer, 1000);
+}
+function onVisChange(){
+  if(document.hidden && attemptState.phase==='exam'){
+    attemptState.tabSwitches = (attemptState.tabSwitches||0)+1;
+    persistAttempt();
+  }
+}
+function remainingMs(){
+  const t=attemptState.test, c=t.config;
+  const deadlineLimit = c.deadlineAt? (c.deadlineAt - attemptState.startedAt) : Infinity;
+  const totalAvailable = Math.min(c.duration*60000, deadlineLimit);
+  const elapsed = Date.now()-attemptState.startedAt;
+  return totalAvailable - elapsed;
+}
+function tickTimer(){
+  if(attemptState.phase!=='exam') { clearInterval(window._examTimer); return; }
+  const rem = remainingMs();
+  const tb=document.getElementById('timerbox');
+  if(tb){ tb.textContent=fmtTime(rem); tb.classList.toggle('low', rem<60000); }
+  if(rem<=0){ clearInterval(window._examTimer); finishExam(true); }
+}
+function drawExam(){
+  const el=document.getElementById('examshell');
+  const t=attemptState.test;
+  const qid = attemptState.order[attemptState.currentIdx];
+  const q = t.questions.find(x=>x.id===qid);
+  const optIds = attemptState.optOrder[qid];
+  const answered = attemptState.answers[qid]||[];
+
+  el.innerHTML = `
+    <div class="exambar">
+      <div>
+        <div style="font-weight:700;">${esc(t.meta.name)}</div>
+        <div class="small muted">${esc(attemptState.student.name)}${attemptState.student.roll? ' · Roll '+esc(attemptState.student.roll):''}</div>
+      </div>
+      <div class="timerbox" id="timerbox">${fmtTime(remainingMs())}</div>
+    </div>
+
+    <div class="qnum">QUESTION ${attemptState.currentIdx+1} OF ${t.questions.length} · ${q.marks} mark${q.marks===1?'':'s'}</div>
+    <div class="qtext" style="font-size:17px;">${esc(q.text)}</div>
+
+    ${optIds.map(oid=>{
+      const o=q.options.find(x=>x.id===oid);
+      const idx=optIds.indexOf(oid);
+      const sel=answered.includes(oid);
+      return `<div class="optbig ${sel?'sel':''}" onclick="selectOption('${qid}','${oid}')">
+        <span class="oletter">${letter(idx)}</span><span>${esc(o.text)}</span>
+      </div>`;
+    }).join('')}
+
+    <div class="examfoot">
+      <div class="row">
+        <button class="btn secondary" ${(!t.config.allowReview || attemptState.currentIdx===0)?'disabled':''} onclick="navQ(-1)">← Previous</button>
+        <button class="btn secondary" onclick="toggleMark('${qid}')">${attemptState.marked[qid]? 'Unmark':'Mark for review'}</button>
+        <button class="btn ghost" onclick="clearAnswer('${qid}')">Clear</button>
+      </div>
+      ${attemptState.currentIdx < t.questions.length-1?
+        `<button class="btn secondary" onclick="navQ(1)">Next →</button>`:
+        `<button class="btn amber" onclick="confirmSubmit()">Submit Test</button>`}
+    </div>
+
+    <div class="palette">
+      ${attemptState.order.map((id,i)=>{
+        const cls = attemptState.marked[id]?'review':(attemptState.answers[id]&&attemptState.answers[id].length?'answered':'');
+        return `<div class="pnode ${cls} ${i===attemptState.currentIdx?'current':''}" onclick="jumpTo(${i})">${i+1}</div>`;
+      }).join('')}
+    </div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="btn danger small" onclick="confirmSubmit()">Submit Test</button>
+    </div>
+  `;
+}
+function selectOption(qid,oid){
+  const t=attemptState.test; const q=t.questions.find(x=>x.id===qid);
+  if(q.type==='multiple'){
+    const cur=new Set(attemptState.answers[qid]||[]);
+    cur.has(oid)? cur.delete(oid): cur.add(oid);
+    attemptState.answers[qid]=[...cur];
+  } else {
+    attemptState.answers[qid]=[oid];
+  }
+  persistAttempt(); drawExam();
+}
+function clearAnswer(qid){ delete attemptState.answers[qid]; persistAttempt(); drawExam(); }
+function toggleMark(qid){ attemptState.marked[qid]=!attemptState.marked[qid]; persistAttempt(); drawExam(); }
+function navQ(d){
+  const t=attemptState.test;
+  const ni=attemptState.currentIdx+d;
+  if(ni<0||ni>=t.questions.length) return;
+  attemptState.currentIdx=ni; persistAttempt(); drawExam();
+}
+function jumpTo(i){
+  if(!attemptState.test.config.allowReview && i<attemptState.currentIdx) return;
+  attemptState.currentIdx=i; drawExam();
+}
+function confirmSubmit(){
+  const t=attemptState.test;
+  const unattempted = t.questions.filter(q=>!(attemptState.answers[q.id]&&attemptState.answers[q.id].length)).length;
+  if(!confirm(`Submit test now? ${unattempted} question(s) are unattempted.`)) return;
+  finishExam(false);
+}
+async function finishExam(auto){
+  clearInterval(window._examTimer);
+  document.removeEventListener('visibilitychange', onVisChange);
+  const t=attemptState.test;
+  const timeTakenMs = Date.now()-attemptState.startedAt;
+
+  // Firebase-backed tests have had their answer key stripped client-side
+  // (see saveTest()), so grading has to happen on the server, where the
+  // key actually lives. This is what keeps a student from reading the
+  // correct answers out of devtools before submitting.
+  if(FIREBASE_ENABLED && t.slug){
+    document.getElementById('examshell').innerHTML = `<div class="fullload"><span class="spinner"></span>Submitting…</div>`;
+    try{
+      const gradeFn = firebase.functions().httpsCallable('gradeTest');
+      const res = await gradeFn({
+        testId: t.id, answers: attemptState.answers, student: attemptState.student,
+        tabSwitches: attemptState.tabSwitches||0, timeTakenMs, autoSubmitted: auto
+      });
+      attemptState.result = res.data;
+      attemptState.phase='submitted';
+      persistAttempt();
+      drawAttempt();
+    }catch(err){
+      document.getElementById('examshell').innerHTML = `
+        <div class="empty"><h3>Couldn't submit</h3>
+        <p class="small muted">${esc(err.message)}</p>
+        <p class="small muted">Your answers are saved on this device — reopen this link once you're back online and try again.</p>
+        <button class="btn amber" style="margin-top:10px;" onclick="finishExam(${auto})">Try again</button></div>`;
+    }
+    return;
+  }
+
+  // Offline / embedded-link mode: the test object carries its own answer
+  // key, so grading can safely happen right here in the browser.
+  let score=0, maxScore=0, correctCount=0, incorrectCount=0, unattempted=0;
+  const perQuestionCorrect={};
+  t.questions.forEach(q=>{
+    maxScore += q.marks;
+    const ans = attemptState.answers[q.id]||[];
+    if(ans.length===0){ unattempted++; return; }
+    const correctSet = new Set(q.correct);
+    const ansSet = new Set(ans);
+    const isCorrect = correctSet.size===ansSet.size && [...correctSet].every(c=>ansSet.has(c));
+    perQuestionCorrect[q.id]=isCorrect;
+    if(isCorrect){ score+=q.marks; correctCount++; }
+    else {
+      incorrectCount++;
+      const neg = t.config.negativeMarking ? (q.negativeMarks || t.config.negativeValue) : 0;
+      score -= neg;
+    }
+  });
+  score = Math.max(0, score);
+  const percentage = maxScore? (score/maxScore*100):0;
+  const result = {
+    id: uid('r'), testId:t.id, testName:t.meta.name,
+    student: attemptState.student,
+    answers: attemptState.answers,
+    perQuestionCorrect,
+    score: Math.round(score*100)/100, maxScore, percentage,
+    correctCount, incorrectCount, unattempted,
+    timeTakenMs,
+    tabSwitches: attemptState.tabSwitches||0,
+    submittedAt: Date.now(),
+    autoSubmitted: auto
+  };
+  addResult(t.id, result);
+  attemptState.phase='submitted';
+  attemptState.result=result;
+  persistAttempt();
+  drawAttempt();
+}
+function drawResult(){
+  const el=document.getElementById('examshell');
+  const t=attemptState.test, r=attemptState.result, vis=t.config.resultVisibility;
+  const passed = r.percentage>=t.config.passPercent;
+
+  if(vis==='hidden'){
+    el.innerHTML = `<div class="resultcard card"><h2>Submitted</h2><p class="muted">Your teacher will release your result later.</p>${downloadResultBtn(r)}</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="resultcard card">
+      <div class="muted small">TEST RESULT</div>
+      <h2 style="margin:6px 0;">${esc(r.student.name)}</h2>
+      ${vis==='immediate'? `<div class="score">${r.score} / ${r.maxScore}</div><div class="muted">${r.percentage.toFixed(1)}%</div>`
+        : `<div class="score">${r.percentage.toFixed(0)}%</div>`}
+      <div style="margin:14px 0;"><span class="pill ${passed?'pass':'fail'}">${passed?'PASS':'FAIL'}</span></div>
+      ${vis==='immediate'? `
+      <div class="resultgrid">
+        <div><div class="n">${r.correctCount}</div><div class="l">Correct</div></div>
+        <div><div class="n">${r.incorrectCount}</div><div class="l">Incorrect</div></div>
+        <div><div class="n">${r.unattempted}</div><div class="l">Unattempted</div></div>
+      </div>`:''}
+      <div class="muted small">Time taken: ${fmtTime(r.timeTakenMs)}${r.autoSubmitted? ' · auto-submitted at time limit':''}</div>
+      ${downloadResultBtn(r)}
+    </div>`;
+}
+function downloadResultBtn(r){
+  return `<div style="margin-top:18px;">
+    <button class="btn secondary small" onclick='downloadResult(${JSON.stringify(JSON.stringify(r))})'>Download result file for teacher</button>
+    <div class="small muted" style="margin-top:6px;">If your teacher is on a different device, send them this file so it appears in their results.</div>
+  </div>`;
+}
+function downloadResult(json){
+  const r = JSON.parse(json);
+  const blob = new Blob([json], {type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`result_${r.student.name.replace(/\s+/g,'_')}.json`; a.click();
+}
+</script>
+</body>
+</html>

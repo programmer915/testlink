@@ -1,0 +1,58 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /tests/{testId} {
+      // Anyone can read a published test (students aren't logged in).
+      // Only the owning teacher can read their own drafts, or edit/delete anything.
+      allow read:   if resource.data.status == 'published'
+                    || (request.auth != null && request.auth.uid == resource.data.ownerId);
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.ownerId;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+
+      match /results/{resultId} {
+        // A student (unauthenticated) can submit exactly one result document
+        // to a test that is currently published. They can never read results back.
+        allow create: if get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published';
+        allow read:   if request.auth != null
+                      && request.auth.uid == get(/databases/$(database)/documents/tests/$(testId)).data.ownerId;
+        allow update, delete: if false;
+      }
+
+      match /private/{doc} {
+        // The answer key. The owning teacher's browser writes this directly
+        // when publishing (see saveTest() in index.html) and reads it back
+        // when re-opening a published test to edit answers. The gradeTest
+        // Cloud Function also reads it, via the privileged admin SDK, which
+        // bypasses these rules entirely. No one else can touch it.
+        allow read, write: if request.auth != null
+                           && request.auth.uid == get(/databases/$(database)/documents/tests/$(testId)).data.ownerId;
+      }
+    }
+  }
+}
+
+/*
+  This works together with two things in the client (index.html):
+
+  1. saveTest() strips each question's `correct` field before writing a
+     *published* test's public document, and writes the real answer key
+     into tests/{id}/private/answerKey instead — which these rules don't
+     expose to anyone (not even via the wildcard read rule above, since
+     there's no `match` block granting access to /private/{doc=**}).
+
+  2. finishExam() calls the gradeTest Cloud Function (functions/index.js)
+     for any test that came from Firestore, instead of grading locally.
+     The function is the only thing that ever reads the private answer key.
+
+  Net effect: a student's browser never receives the correct answers for
+  a synced/published test, before or after submitting. Draft tests still
+  keep the full answer key in their one document — that's fine, since
+  drafts are only readable by the owning teacher per the rule above.
+
+  One practical consequence: if you publish a test before deploying the
+  Cloud Function (see SETUP.md step 6), students will see a clear
+  "couldn't submit, try again" message rather than a silent failure or
+  an exposed key — deploying the function is what makes grading work.
+*/
+

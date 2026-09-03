@@ -1,0 +1,11 @@
+{
+  "name": "testlink-functions",
+  "description": "Secure server-side grading for TestLink",
+  "engines": { "node": "18" },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^12.1.0",
+    "firebase-functions": "^4.9.0"
+  },
+  "private": true
+}
