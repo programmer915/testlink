@@ -266,12 +266,12 @@ function letter(i){ return String.fromCharCode(65+i); }
    cross-device sync. Leave it untouched and the app runs exactly
    as before, on localStorage only, for local demos/grading. */
 const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY",
-  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
-  projectId: "PASTE_YOUR_PROJECT_ID",
-  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
+  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
+  authDomain: "testlink-4bec5.firebaseapp.com",
+  projectId: "testlink-4bec5",
+  storageBucket: "testlink-4bec5.firebasestorage.app",
+  messagingSenderId: "630221369903",
+  appId: "1:630221369903:web:dd9a48361c680f44c78cda"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
