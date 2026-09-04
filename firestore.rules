@@ -2,6 +2,35 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ---- helpers ---------------------------------------------------
+    function isOwner(testId) {
+      return request.auth != null
+        && request.auth.uid == get(/databases/$(database)/documents/tests/$(testId)).data.ownerId;
+    }
+
+    // Validates a brand-new attempt document against the test's actual
+    // rules — this is the only thing standing between a student and just
+    // writing themselves unlimited time, since there's no Cloud Function
+    // here to check it in application code.
+    function canCreateAttempt(testId, d) {
+      let test = get(/databases/$(database)/documents/tests/$(testId)).data;
+      return test.status == 'published'
+        && d.testId == testId
+        && d.status == 'in-progress'
+        && d.answers.size() == 0
+        && d.tabSwitches == 0
+        // startedAt must be (approximately) now — a student can't backdate
+        // it to manufacture extra elapsed time, nor postdate it to delay
+        // when their timer starts counting down.
+        && math.abs(request.time.toMillis() - d.startedAt) < 15000
+        // availableMs can never exceed what the test's own config allows,
+        // regardless of what value the client tries to send.
+        && d.availableMs <= test.config.duration * 60000 + 1000
+        && (test.config.deadlineAt == null
+            || d.availableMs <= (test.config.deadlineAt - d.startedAt) + 15000);
+    }
+
+    // ---- tests -------------------------------------------------------
     match /tests/{testId} {
       // Anyone can read a published test (students aren't logged in).
       // Only the owning teacher can read their own drafts, or edit/delete anything.
@@ -10,49 +39,79 @@ service cloud.firestore {
       allow create: if request.auth != null && request.auth.uid == request.resource.data.ownerId;
       allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
 
-      match /results/{resultId} {
-        // A student (unauthenticated) can submit exactly one result document
-        // to a test that is currently published. They can never read results back.
-        allow create: if get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published';
-        allow read:   if request.auth != null
-                      && request.auth.uid == get(/databases/$(database)/documents/tests/$(testId)).data.ownerId;
-        allow update, delete: if false;
-      }
+      // ---- attempts (the exam session itself) -------------------------
+      // No Cloud Functions in this build, so these rules — not application
+      // code — are what enforce the timer and stop a student from just
+      // editing their own remaining time or answers directly in Firestore.
+      match /attempts/{attemptId} {
+        allow create: if canCreateAttempt(testId, request.resource.data);
 
-      match /private/{doc} {
-        // The answer key. The owning teacher's browser writes this directly
-        // when publishing (see saveTest() in index.html) and reads it back
-        // when re-opening a published test to edit answers. The gradeTest
-        // Cloud Function also reads it, via the privileged admin SDK, which
-        // bypasses these rules entirely. No one else can touch it.
-        allow read, write: if request.auth != null
-                           && request.auth.uid == get(/databases/$(database)/documents/tests/$(testId)).data.ownerId;
+        // A student who already knows this specific (effectively
+        // unguessable, Firestore-auto-generated) attempt ID can fetch it
+        // directly — this is what makes "resume after refresh / reopening
+        // the link" work. It does NOT allow browsing/listing all attempts.
+        allow get: if true;
+        allow list: if isOwner(testId);
+
+        allow update: if
+          resource.data.status == 'in-progress' &&
+          // Core exam parameters can never be changed once the attempt exists.
+          request.resource.data.testId == resource.data.testId &&
+          request.resource.data.startedAt == resource.data.startedAt &&
+          request.resource.data.availableMs == resource.data.availableMs &&
+          request.resource.data.order == resource.data.order &&
+          request.resource.data.optOrder == resource.data.optOrder &&
+          request.resource.data.student == resource.data.student &&
+          // Every save — including the final submit — has to arrive within
+          // the real allowance plus a short grace period for normal network
+          // latency. This is checked against request.time, Firestore's own
+          // clock, so changing a device's system clock has no effect on it.
+          request.time.toMillis() <= resource.data.startedAt + resource.data.availableMs + 60000;
+
+        allow delete: if false;
       }
+    }
+
+    match /questionBank/{itemId} {
+      // Each teacher's saved questions are entirely private to them.
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.ownerId;
     }
   }
 }
 
 /*
-  This works together with two things in the client (index.html):
+  Architecture note (free Spark plan — no Cloud Functions, no billing
+  account required anywhere):
 
-  1. saveTest() strips each question's `correct` field before writing a
-     *published* test's public document, and writes the real answer key
-     into tests/{id}/private/answerKey instead — which these rules don't
-     expose to anyone (not even via the wildcard read rule above, since
-     there's no `match` block granting access to /private/{doc=**}).
+  This build made a deliberate tradeoff: a published test's document is
+  fully public-readable, including each question's correct answer. That's
+  what lets a student's own browser grade their exam immediately and show
+  a full result the instant they submit, with zero server-side compute.
+  The cost is that a technically curious student could find the answer
+  key via their browser's developer tools before or during the exam.
 
-  2. finishExam() calls the gradeTest Cloud Function (functions/index.js)
-     for any test that came from Firestore, instead of grading locally.
-     The function is the only thing that ever reads the private answer key.
+  What these rules still genuinely enforce, with no server code at all:
+    - A teacher can only ever read/write their own tests and question bank
+      (not other teachers').
+    - An exam's timer can't be extended by editing a device's clock: every
+      write to an attempt — including the final submission — is checked
+      against Firestore's own request.time, not anything the client sends.
+    - A fresh attempt's time allowance is capped at what the test's actual
+      duration/deadline permit, no matter what a client tries to write.
+    - Once an attempt is submitted, it's frozen — no further updates.
+    - A student can fetch (resume) only a specific attempt they already
+      know the ID of; they cannot list or browse other students' attempts.
+      Only the owning teacher can list all attempts for a test, which is
+      how the Results page works — each submitted attempt already carries
+      its own computed score, correctCount, etc., written by the student's
+      browser at submission time.
 
-  Net effect: a student's browser never receives the correct answers for
-  a synced/published test, before or after submitting. Draft tests still
-  keep the full answer key in their one document — that's fine, since
-  drafts are only readable by the owning teacher per the rule above.
-
-  One practical consequence: if you publish a test before deploying the
-  Cloud Function (see SETUP.md step 6), students will see a clear
-  "couldn't submit, try again" message rather than a silent failure or
-  an exposed key — deploying the function is what makes grading work.
+  If you outgrow this tradeoff later — e.g. this becomes a graded,
+  higher-stakes exam rather than a practice quiz — the fix is to bring
+  back a Cloud Function that holds the only copy of the answer key and
+  grades server-side, at the cost of requiring Firebase's Blaze plan
+  (still $0 for classroom-scale usage, but does require a billing method
+  on file). That version of this app has already been built before; ask
+  if you want to switch back to it.
 */
-

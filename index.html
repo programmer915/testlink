@@ -11,7 +11,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
 <style>
 :root{
   --ink:#1B2430;
@@ -245,8 +244,6 @@ table.results tr:hover td{background:#FBF9F4;}
 
 /* ---------------- utils ---------------- */
 const uid = (p='id') => p+'_'+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4);
-function b64encode(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
-function b64decode(str){ return JSON.parse(decodeURIComponent(escape(atob(str)))); }
 function fmtTime(ms){
   if(ms<0) ms=0;
   const s=Math.floor(ms/1000);
@@ -261,17 +258,18 @@ function toast(msg){
 }
 function letter(i){ return String.fromCharCode(65+i); }
 
-/* ---------------- Firebase (optional) ----------------
-   Paste your project's config below to turn on real accounts and
-   cross-device sync. Leave it untouched and the app runs exactly
-   as before, on localStorage only, for local demos/grading. */
+/* ---------------- Firebase (required) ----------------
+   TestLink is now a server-backed app: every teacher signs in, and every
+   test, question-bank item, submission, and result lives in Firestore —
+   nothing persistent is kept in localStorage or embedded in URLs anymore.
+   Paste your project's config below (see SETUP.md) before hosting this. */
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -282,75 +280,24 @@ if(FIREBASE_ENABLED){
 }
 
 /* ---------------- storage ----------------
-   localCache always holds {tests:{}, results:{}} in memory — every
-   view reads from it synchronously via getDB(). When Firebase is on,
-   Firestore onSnapshot listeners keep localCache in sync in the
-   background and writes go to Firestore; when it's off, localCache
-   is just localStorage read into memory. */
-const DB_KEY='testlink_db_v1';
-let localCache = {tests:{}, results:{}};
+   localCache is a read-through, in-memory mirror of Firestore — every
+   view reads it synchronously via getDB() for simplicity, but it holds
+   no data of its own: Firestore onSnapshot listeners populate it after
+   sign-in, and every write goes straight to Firestore. Close the tab,
+   clear the browser, or open a different device and log in again — the
+   data is exactly as you left it, because none of it ever lived here. */
+let localCache = {tests:{}, results:{}, bank:[]};
 function getDB(){ return localCache; }
-function loadLocalStorageCache(){
-  try{ localCache = JSON.parse(localStorage.getItem(DB_KEY)) || {tests:{}, results:{}}; }
-  catch(e){ localCache = {tests:{}, results:{}}; }
-}
-function persistLocalStorageCache(){ localStorage.setItem(DB_KEY, JSON.stringify(localCache)); }
 
 function saveTest(test){
-  localCache.tests[test.id]=test; // full version (with answers) stays in the teacher's own memory/UI
-  if(FIREBASE_ENABLED && currentUser){
-    const isPublished = test.status==='published';
-    // Once a test is published, its Firestore doc becomes publicly readable
-    // (students aren't logged in), so the answer key must NOT travel with it.
-    const publicQuestions = test.questions.map(q=>{
-      if(!isPublished) return q; // drafts are owner-only readable — safe to keep everything
-      const {correct, ...rest} = q; return rest;
-    });
-    const publicDoc = {...test, ownerId: currentUser.uid, questions: publicQuestions};
-    dbf.collection('tests').doc(test.id).set(publicDoc)
-      .catch(err=>toast('Could not sync to the cloud: '+err.message));
-    if(isPublished){
-      const answerKey={}; test.questions.forEach(q=>{ answerKey[q.id]=q.correct||[]; });
-      dbf.collection('tests').doc(test.id).collection('private').doc('answerKey').set(answerKey).catch(()=>{});
-    }
-  } else {
-    persistLocalStorageCache();
-  }
-}
-// When opening a published test for editing, the local/synced copy has had its
-// answer key stripped (see saveTest above) — pull it back from the owner-only
-// private subcollection so the verify/edit screens work normally.
-async function loadTestForEdit(testId){
-  let test = getDB().tests[testId];
-  if(!test) return null;
-  const missingAnswers = FIREBASE_ENABLED && test.questions.length && test.questions.some(q=>q.correct===undefined);
-  if(missingAnswers){
-    try{
-      const keyDoc = await dbf.collection('tests').doc(testId).collection('private').doc('answerKey').get();
-      test = JSON.parse(JSON.stringify(test));
-      const key = keyDoc.exists? keyDoc.data() : {};
-      test.questions.forEach(q=>{ q.correct = key[q.id] || []; });
-    }catch(e){ toast('Could not load answer key: '+e.message); }
-  }
-  return test;
+  localCache.tests[test.id]=test;
+  const publicDoc = {...test, ownerId: currentUser.uid};
+  dbf.collection('tests').doc(test.id).set(publicDoc)
+    .catch(err=>toast('Could not save to the server: '+err.message));
 }
 function deleteTest(id){
   delete localCache.tests[id]; delete localCache.results[id];
-  if(FIREBASE_ENABLED && currentUser){
-    dbf.collection('tests').doc(id).delete().catch(()=>{});
-  } else {
-    persistLocalStorageCache();
-  }
-}
-function addResult(testId, result){
-  if(!localCache.results[testId]) localCache.results[testId]=[];
-  if(!localCache.results[testId].some(r=>r.id===result.id)) localCache.results[testId].push(result);
-  if(FIREBASE_ENABLED){
-    dbf.collection('tests').doc(testId).collection('results').doc(result.id).set(result)
-      .catch(()=>toast('Could not sync this result online — please use the download button instead.'));
-  } else {
-    persistLocalStorageCache();
-  }
+  dbf.collection('tests').doc(id).delete().catch(()=>{});
 }
 function subscribeTeacherData(){
   if(window._unsubTests) window._unsubTests();
@@ -362,14 +309,48 @@ function subscribeTeacherData(){
       render();
     }, err=>toast('Sync error: '+err.message));
 }
+// A "result" is just a submitted attempt — the student's own browser grades
+// it (against the test's own answer key, which it already has) at the
+// moment of submission and writes the score straight into the attempt
+// document, so the teacher's dashboard has nothing further to compute.
 function subscribeResults(testId){
   if(window._unsubResults) window._unsubResults();
-  window._unsubResults = dbf.collection('tests').doc(testId).collection('results')
+  window._unsubResults = dbf.collection('tests').doc(testId).collection('attempts')
     .onSnapshot(snap=>{
-      const arr=[]; snap.forEach(d=>arr.push(d.data()));
+      const arr=[];
+      snap.forEach(d=>{ const a=d.data(); if(a.status==='submitted'){ a.id=d.id; arr.push(a); } });
       localCache.results[testId]=arr;
       if(location.hash===`#/results/${testId}`) render();
     }, err=>toast('Sync error: '+err.message));
+}
+
+/* ---------------- question bank ----------------
+   Reusable questions, saved once and pulled into any future test — its
+   own Firestore collection, scoped to the signed-in teacher. */
+function subscribeBank(){
+  if(window._unsubBank) window._unsubBank();
+  window._unsubBank = dbf.collection('questionBank').where('ownerId','==',currentUser.uid)
+    .onSnapshot(snap=>{
+      const items=[];
+      snap.forEach(doc=>{ const d=doc.data(); d.id=doc.id; items.push(d); });
+      items.sort((a,b)=>b.createdAt-a.createdAt);
+      localCache.bank=items;
+      if(location.hash==='#/bank') render();
+    }, err=>toast('Sync error: '+err.message));
+}
+function addToBank(q){
+  const item = {
+    ownerId: currentUser.uid,
+    text: q.text, options: q.options, correct: q.correct,
+    marks: q.marks, negativeMarks: q.negativeMarks, createdAt: Date.now()
+  };
+  dbf.collection('questionBank').add(item)
+    .then(()=>toast('Saved to your question bank'))
+    .catch(err=>toast('Could not save: '+err.message));
+}
+function deleteBankItem(id){
+  if(!confirm('Remove this question from your bank?')) return;
+  dbf.collection('questionBank').doc(id).delete().catch(err=>toast('Could not delete: '+err.message));
 }
 
 /* ---------------- question paper parser ---------------- */
@@ -459,17 +440,27 @@ function render(){
   const hash = location.hash || '#/dashboard';
   const app = document.getElementById('app');
 
+  if(!FIREBASE_ENABLED){
+    app.innerHTML = `
+      <div class="topbar"><div class="brand"><span class="mark">T</span><span class="name">TestLink</span></div></div>
+      <div class="shell"><div class="authshell card pad">
+        <h2 style="margin-bottom:8px;">Server setup required</h2>
+        <p class="muted small">This deployment hasn't been connected to a Firebase project yet, so there's nowhere to store accounts, tests, or results. Paste a real <span class="mono">firebaseConfig</span> near the top of <span class="mono">index.html</span> and reload — see SETUP.md for the exact steps.</p>
+      </div></div>`;
+    return;
+  }
+
   if(hash.startsWith('#/attempt')){
     app.innerHTML = renderAttemptShell();
     mountAttempt(hash);
     return;
   }
 
-  if(FIREBASE_ENABLED && !authReady){
+  if(!authReady){
     app.innerHTML = `<div class="fullload"><span class="spinner"></span>Loading…</div>`;
     return;
   }
-  if(FIREBASE_ENABLED && !currentUser){
+  if(!currentUser){
     app.innerHTML = `
       <div class="topbar">
         <div class="brand"><span class="mark">T</span><span class="name">TestLink</span></div>
@@ -482,23 +473,17 @@ function render(){
   let body='';
   let route='dashboard';
   if(hash.startsWith('#/create')) { body=viewWizard(); route='create'; }
+  else if(hash.startsWith('#/bank')) { body=viewBank(); route='bank'; }
   else if(hash.startsWith('#/results/')) {
     const tid=hash.split('/')[2];
-    if(FIREBASE_ENABLED) subscribeResults(tid);
+    subscribeResults(tid);
     body=viewResults(tid); route='dashboard';
   }
   else if(hash.startsWith('#/edit/')) {
     const tid = hash.split('/')[2];
     const cached = getDB().tests[tid];
-    const ready = cached && (!FIREBASE_ENABLED || !cached.questions.length || cached.questions.every(q=>q.correct!==undefined));
-    if(ready){
-      wizardDraft = cached; body=viewWizard(); route='create';
-    } else if(cached) {
-      loadTestForEdit(tid).then(t=>{ wizardDraft=t; render(); });
-      body = `<div class="fullload"><span class="spinner"></span>Loading test…</div>`; route='create';
-    } else {
-      body = `<div class="empty card"><h3>Test not found</h3></div>`;
-    }
+    if(cached){ wizardDraft = cached; body=viewWizard(); route='create'; }
+    else { body = `<div class="empty card"><h3>Test not found</h3></div>`; }
   }
   else { body=viewDashboard(); route='dashboard'; }
 
@@ -510,10 +495,11 @@ function render(){
         <span class="tag">&nbsp;· teacher console</span>
       </div>
       <div class="topnav">
-        <span class="synctag ${FIREBASE_ENABLED?'online':'offline'}">${FIREBASE_ENABLED? '● synced':'○ local only'}</span>
+        <span class="synctag online">● saved to your account</span>
         <span class="${route==='dashboard'?'active':''}" onclick="location.hash='#/dashboard'">Dashboard</span>
         <span class="${route==='create'?'active':''}" onclick="startNewTest()">Create Test</span>
-        ${FIREBASE_ENABLED? `<span onclick="doLogout()">Sign out (${esc(currentUser.email)})</span>`:''}
+        <span class="${route==='bank'?'active':''}" onclick="location.hash='#/bank'">Question Bank</span>
+        <span onclick="doLogout()">Sign out (${esc(currentUser.email)})</span>
       </div>
     </div>
     <div class="shell wide">${body}</div>
@@ -527,12 +513,10 @@ window.addEventListener('DOMContentLoaded', render);
 if(FIREBASE_ENABLED){
   auth.onAuthStateChanged(user=>{
     currentUser = user; authReady = true;
-    if(user) subscribeTeacherData();
-    else localCache = {tests:{}, results:{}};
+    if(user){ subscribeTeacherData(); subscribeBank(); }
+    else localCache = {tests:{}, results:{}, bank:[]};
     render();
   });
-} else {
-  loadLocalStorageCache();
 }
 
 /* ---------------- auth screens (only used when Firebase is on) ---------------- */
@@ -638,6 +622,33 @@ function wireDashboardEvents(){
 }
 
 /* ============================================================
+   QUESTION BANK (standalone page)
+   ============================================================ */
+function viewBank(){
+  const bank = getDB().bank || [];
+  return `
+    <div class="dash-head">
+      <div>
+        <h1 style="font-size:26px;">Question Bank</h1>
+        <p class="muted" style="margin-top:6px;">Questions you've saved from past tests — reusable across any future test.</p>
+      </div>
+    </div>
+    ${bank.length===0? `<div class="empty card"><h3>Nothing saved yet</h3><p>Open a test's Verify step and use "+ Save to Bank" on any question you'd like to reuse later.</p></div>` : `
+    <div class="test-list">
+      ${bank.map(item=>`
+        <div class="test-row" style="align-items:flex-start;">
+          <div class="ti" style="max-width:75%;">
+            <h4 style="font-size:14.5px; font-weight:600;">${esc(item.text.slice(0,140))}${item.text.length>140?'…':''}</h4>
+            <div class="meta">${item.options.length} options · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}</div>
+          </div>
+          <div class="ta"><button class="btn danger small" onclick="deleteBankItem('${item.id}')">Delete</button></div>
+        </div>`).join('')}
+    </div>`}
+  `;
+}
+
+
+/* ============================================================
    CREATE / EDIT WIZARD
    ============================================================ */
 let wizardStep = 'upload'; // upload -> verify -> configure -> preview
@@ -685,7 +696,10 @@ Answer: B
 2. ..."></textarea>
 
       <div class="row" style="margin-top:16px; justify-content:space-between;">
-        <button class="btn secondary" onclick="addBlankQuestion()">+ Add a question manually instead</button>
+        <div class="row">
+          <button class="btn secondary" onclick="addBlankQuestion()">+ Add a question manually instead</button>
+          <button class="btn secondary" onclick="openBankPicker()">+ Insert from Question Bank</button>
+        </div>
         <button class="btn amber" id="extractBtn" onclick="runExtraction()">Extract Questions →</button>
       </div>
     </div>
@@ -803,6 +817,44 @@ function addBlankQuestion(){
   });
   persistDraft(); wizardStep='verify'; render();
 }
+function openBankPicker(){
+  const bank = getDB().bank || [];
+  const modal=document.createElement('div');
+  modal.className='modalbg';
+  modal.innerHTML = `
+    <div class="modal">
+      <h3 style="margin-bottom:6px;">Insert from Question Bank</h3>
+      <p class="muted small" style="margin-bottom:14px;">Pick questions you've saved before. They come in already marked Verified.</p>
+      ${bank.length===0? `<div class="empty"><p>Your question bank is empty. Save a question to it from the Verify step of any test.</p></div>` : `
+        <div id="bankPickList">
+          ${bank.map(item=>`
+            <div class="editrow" style="align-items:flex-start;">
+              <input type="checkbox" id="bk_${item.id}" style="width:16px;height:16px;margin-top:3px;">
+              <label for="bk_${item.id}" style="flex:1; cursor:pointer; font-size:13.5px;">${esc(item.text.slice(0,120))}${item.text.length>120?'…':''} <span class="muted small">(${item.options.length} options, ${item.marks} mark${item.marks===1?'':'s'})</span></label>
+            </div>`).join('')}
+        </div>
+        <div class="row" style="justify-content:flex-end; margin-top:14px;">
+          <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Cancel</button>
+          <button class="btn amber" onclick="insertFromBank()">Add selected</button>
+        </div>`}
+    </div>`;
+  document.body.appendChild(modal);
+}
+function insertFromBank(){
+  const bank = getDB().bank || [];
+  const checked = bank.filter(item=>{ const el=document.getElementById('bk_'+item.id); return el && el.checked; });
+  checked.forEach(item=>{
+    wizardDraft.questions.push({
+      id: uid('q'), text:item.text, type:'single',
+      options: item.options.map(o=>({...o})), correct:[...item.correct],
+      marks:item.marks, negativeMarks:item.negativeMarks||0,
+      status:'verified', lowConfidence:false
+    });
+  });
+  persistDraft();
+  document.querySelector('.modalbg').remove();
+  if(checked.length){ wizardStep='verify'; render(); toast(`${checked.length} question(s) added from your bank`); }
+}
 
 /* ---- Step 2: Verify ---- */
 function stepVerify(){
@@ -845,6 +897,7 @@ function questionCard(q,i){
     <div class="qactions">
       <button class="btn secondary small" onclick="openEditModal('${q.id}')">Edit</button>
       <button class="btn secondary small" onclick="markVerified('${q.id}')">Mark Verified</button>
+      <button class="btn ghost small" onclick="addToBank(findQ('${q.id}'))">+ Save to Bank</button>
       <button class="btn ghost small" onclick="moveQ('${q.id}',-1)">↑</button>
       <button class="btn ghost small" onclick="moveQ('${q.id}',1)">↓</button>
       <button class="btn danger small" onclick="deleteQ('${q.id}')">Delete</button>
@@ -1003,16 +1056,11 @@ function stepPreview(){
   `;
 }
 function buildShareLink(t){
-  if(FIREBASE_ENABLED && t.slug){
-    return `${location.origin}${location.pathname}#/attempt/${t.slug}`;
-  }
-  const payload = { test: { id:t.id, meta:t.meta, questions:t.questions, config:t.config } };
-  const encoded = b64encode(payload);
-  return `${location.origin}${location.pathname}#/attempt/${encoded}`;
+  return `${location.origin}${location.pathname}#/attempt/${t.slug}`;
 }
 function publishTest(){
   wizardDraft.status='published';
-  if(FIREBASE_ENABLED && !wizardDraft.slug){ wizardDraft.slug = Math.random().toString(36).slice(2,9)+Math.random().toString(36).slice(2,5); }
+  if(!wizardDraft.slug){ wizardDraft.slug = Math.random().toString(36).slice(2,9)+Math.random().toString(36).slice(2,5); }
   persistDraft(); render(); toast('Published! Link ready to share.');
 }
 function unpublish(){ wizardDraft.status='draft'; persistDraft(); render(); }
@@ -1050,7 +1098,7 @@ function viewResults(testId){
   return `
     <button class="btn ghost small" style="margin-bottom:10px;" onclick="location.hash='#/dashboard'">← Back to dashboard</button>
     <h2 style="font-size:22px; margin-bottom:4px;">${esc(test.meta.name)} — Results</h2>
-    <p class="muted small" style="margin-bottom:20px;">${n} submission${n===1?'':'s'} recorded in this browser.</p>
+    <p class="muted small" style="margin-bottom:20px;">${n} submission${n===1?'':'s'} · synced live from every device students submitted on.</p>
 
     <div class="stat-row">
       <div class="stat"><div class="num">${avg}%</div><div class="lbl">Class average</div></div>
@@ -1066,17 +1114,13 @@ function viewResults(testId){
 
     <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
       <strong class="small">Submissions</strong>
-      <div class="row" style="gap:8px;">
-        <button class="btn secondary small" onclick="document.getElementById('importIn').click()">Import result file</button>
-        <input type="file" id="importIn" accept=".json" style="display:none" onchange="importResult('${testId}', this.files[0])">
-        <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportCSV('${testId}')">Export CSV</button>
-      </div>
+      <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportCSV('${testId}')">Export CSV</button>
     </div>
 
-    ${n===0? `<div class="empty card"><h3>No submissions yet</h3><p>Once students submit (in this browser), or you import their result files, they'll show up here.</p></div>`:`
+    ${n===0? `<div class="empty card"><h3>No submissions yet</h3><p>As soon as a student submits, from any device, it appears here automatically.</p></div>`:`
     <div class="card pad" style="overflow:auto;">
       <table class="results">
-        <thead><tr><th>Student</th><th>Class/Roll</th><th>Score</th><th>%</th><th>Tab switches</th><th>Time</th><th>Status</th></tr></thead>
+        <thead><tr><th>Student</th><th>Class/Roll</th><th>Score</th><th>%</th><th>Tab switches</th><th>Time</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${results.map(r=>`
             <tr>
@@ -1087,24 +1131,48 @@ function viewResults(testId){
               <td>${r.tabSwitches}${r.tabSwitches>2?' ⚠':''}</td>
               <td>${fmtTime(r.timeTakenMs)}</td>
               <td>${r.percentage>=test.config.passPercent? '<span class="badge verified">PASS</span>':'<span class="badge review">FAIL</span>'}</td>
+              <td><button class="btn ghost small" onclick="openResponseModal('${testId}','${r.id}')">View responses</button></td>
             </tr>`).join('')}
         </tbody>
       </table>
     </div>`}
   `;
 }
-function importResult(testId, file){
-  if(!file) return;
-  const reader=new FileReader();
-  reader.onload=e=>{
-    try{
-      const result = JSON.parse(e.target.result);
-      addResult(testId, result);
-      toast('Result imported');
-      render();
-    }catch(err){ toast('Could not read that file'); }
-  };
-  reader.readAsText(file);
+function openResponseModal(testId, resultId){
+  const test = getDB().tests[testId];
+  const result = (getDB().results[testId]||[]).find(r=>r.id===resultId);
+  if(!test || !result) return;
+  const modal=document.createElement('div');
+  modal.className='modalbg';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:680px;">
+      <h3 style="margin-bottom:2px;">${esc(result.student.name)}</h3>
+      <p class="muted small" style="margin-bottom:16px;">${esc(result.student.class||'')} ${esc(result.student.roll||'')} · ${result.score} / ${result.maxScore} (${result.percentage.toFixed(1)}%)</p>
+      ${test.questions.map((q,i)=>{
+        const given = result.answers[q.id]||[];
+        const correctIds = q.correct||[];
+        const wasCorrect = result.perQuestionCorrect? result.perQuestionCorrect[q.id] : null;
+        return `
+        <div class="qcard" style="margin-bottom:10px;">
+          <div class="qhead"><span class="qnum">Q${i+1}</span>
+            ${wasCorrect===true? '<span class="badge verified">Correct</span>' : wasCorrect===false? '<span class="badge review">Incorrect</span>' : '<span class="badge draft">Unattempted</span>'}
+          </div>
+          <div class="qtext" style="font-size:14px;">${esc(q.text)}</div>
+          ${q.options.map(o=>{
+            const wasGiven = given.includes(o.id);
+            const isCorrect = correctIds.includes(o.id);
+            let style='';
+            if(isCorrect) style='color:var(--green); font-weight:600;';
+            else if(wasGiven && !isCorrect) style='color:var(--red); text-decoration:line-through;';
+            return `<div class="opt" style="${style}"><span class="oletter" style="${isCorrect?'background:var(--green);border-color:var(--green);color:#fff;':wasGiven?'background:var(--red);border-color:var(--red);color:#fff;':''}">${wasGiven?'●':''}</span>${esc(o.text)}</div>`;
+          }).join('')}
+        </div>`;
+      }).join('')}
+      <div class="row" style="justify-content:flex-end; margin-top:6px;">
+        <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
 }
 function exportCSV(testId){
   const db=getDB(); const results=db.results[testId]||[];
@@ -1115,53 +1183,124 @@ function exportCSV(testId){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='results.csv'; a.click();
 }
 
+
 /* ============================================================
    STUDENT ATTEMPT FLOW
+   ------------------------------------------------------------
+   No Cloud Functions in this build (free Spark plan only) — an attempt
+   document in Firestore (tests/{id}/attempts/{id}) is still the sole
+   source of truth for the timer's start time and remaining allowance,
+   the question/option order, answers, the marked-for-review set, and
+   tab-switch count. firestore.rules is what actually enforces the
+   timer, checking every write against the server's own clock
+   (request.time) rather than trusting the browser's. Grading happens
+   in the student's own browser at submission (see finishExam below) —
+   a deliberate tradeoff explained in firestore.rules and README.md.
+   The browser keeps nothing but a small pointer — the attemptId — in
+   localStorage, purely so a refresh or a closed-and-reopened tab can
+   fetch that same record back.
    ============================================================ */
 function renderAttemptShell(){ return `<div class="examshell" id="examshell"></div>`; }
 
 async function mountAttempt(hash){
   const el = document.getElementById('examshell');
-  const raw = decodeURIComponent(hash.replace('#/attempt/',''));
-  let test = null;
+  const slug = decodeURIComponent(hash.replace('#/attempt/',''));
 
-  // Try the offline format first: full test JSON embedded as base64.
-  try{ test = b64decode(raw).test; }
-  catch(e){ /* not an embedded link — fall through to Firestore lookup below */ }
-
-  if(!test){
-    if(!FIREBASE_ENABLED){
-      el.innerHTML = `<div class="empty"><h3>This link looks broken</h3><p>Ask your teacher to resend it.</p></div>`;
+  el.innerHTML = `<div class="fullload"><span class="spinner"></span>Loading test…</div>`;
+  let test;
+  try{
+    const snap = await dbf.collection('tests').where('slug','==',slug).where('status','==','published').limit(1).get();
+    if(snap.empty){
+      el.innerHTML = `<div class="empty"><h3>Test not found</h3><p>This link may have been unpublished, or it's mistyped. Ask your teacher to resend it.</p></div>`;
       return;
     }
-    el.innerHTML = `<div class="fullload"><span class="spinner"></span>Loading test…</div>`;
-    try{
-      const snap = await dbf.collection('tests').where('slug','==',raw).limit(1).get();
-      if(snap.empty){
-        el.innerHTML = `<div class="empty"><h3>Test not found</h3><p>This link may have been unpublished. Ask your teacher to resend it.</p></div>`;
-        return;
-      }
-      test = snap.docs[0].data(); test.id = snap.docs[0].id;
-    }catch(err){
-      el.innerHTML = `<div class="empty"><h3>Couldn't load this test</h3><p class="small muted">${esc(err.message)}</p></div>`;
-      return;
-    }
+    test = snap.docs[0].data(); test.id = snap.docs[0].id;
+  }catch(err){
+    el.innerHTML = `<div class="empty"><h3>Couldn't load this test</h3><p class="small muted">${esc(err.message)}</p></div>`;
+    return;
   }
 
-  const storeKey = 'testlink_attempt_'+test.id;
-  let saved = null;
-  try{ saved = JSON.parse(localStorage.getItem(storeKey)); }catch(e){}
+  attemptState = {
+    phase:'details', test, storageKey:'testlink_attemptid_'+test.id,
+    student:{name:'',class:'',roll:'',section:''},
+    attemptId:null, answers:{}, marked:{}, tabSwitches:0, currentIdx:0,
+    startedAt:null, availableMs:null, order:null, optOrder:null, clockOffset:0
+  };
 
-  attemptState = saved || { phase:'details', student:{name:'',class:'',roll:'',section:''}, answers:{}, marked:{}, tabSwitches:0, startedAt:null, order:null };
-  attemptState.test = test;
-  attemptState.storeKey = storeKey;
-
+  // If this browser already started (or finished) this test — a refresh,
+  // or the tab was closed and the link opened again — resume it from the
+  // server instead of showing the details form again.
+  const savedAttemptId = localStorage.getItem(attemptState.storageKey);
+  if(savedAttemptId){
+    await resumeAttempt(savedAttemptId);
+    return;
+  }
   drawAttempt();
 }
-function persistAttempt(){
-  const {test, ...rest} = attemptState;
-  localStorage.setItem(attemptState.storeKey, JSON.stringify(rest));
+
+async function resumeAttempt(attemptId){
+  const el = document.getElementById('examshell');
+  el.innerHTML = `<div class="fullload"><span class="spinner"></span>Restoring your exam…</div>`;
+  try{
+    const ref = attemptRef(attemptId);
+    const snap = await ref.get();
+    if(!snap.exists){
+      localStorage.removeItem(attemptState.storageKey);
+      drawAttempt();
+      return;
+    }
+    const a = snap.data();
+    applyAttemptResponse(a, attemptId);
+  }catch(err){
+    // Stale or unrecognized pointer — clear it and let the student start fresh.
+    localStorage.removeItem(attemptState.storageKey);
+    drawAttempt();
+  }
 }
+function attemptRef(attemptId){
+  return dbf.collection('tests').doc(attemptState.test.id).collection('attempts').doc(attemptId);
+}
+
+function applyAttemptResponse(a, attemptId){
+  if(a.status==='submitted'){
+    const cached = localStorage.getItem('testlink_result_'+attemptState.test.id);
+    if(cached){
+      try{
+        attemptState.result = JSON.parse(cached);
+        attemptState.phase='submitted';
+        drawAttempt();
+        return;
+      }catch(e){ /* fall through */ }
+    }
+    if(typeof a.percentage === 'number'){
+      attemptState.result = a; // the attempt doc already holds the graded result
+      attemptState.phase='submitted';
+    } else {
+      // Missing graded fields (e.g. an older attempt from before this build) —
+      // show a plain notice instead of crashing the result screen.
+      attemptState.phase='alreadysubmitted';
+    }
+    drawAttempt();
+    return;
+  }
+  attemptState.attemptId = attemptId;
+  attemptState.student = a.student;
+  attemptState.order = a.order;
+  attemptState.optOrder = a.optOrder;
+  attemptState.answers = a.answers || {};
+  attemptState.marked = a.marked || {};
+  attemptState.tabSwitches = a.tabSwitches || 0;
+  attemptState.currentIdx = a.currentIdx || 0;
+  attemptState.startedAt = a.startedAt;
+  attemptState.availableMs = a.availableMs;
+  attemptState.clockOffset = 0; // corrected on the first sync/heartbeat, see syncProgress()
+  attemptState.phase = 'exam';
+  localStorage.setItem(attemptState.storageKey, attemptId);
+  attachExamRuntime();
+  drawAttempt();
+  syncProgressSafe(); // pulls a real clock-offset reading immediately, rather than waiting for the first heartbeat
+}
+
 function drawAttempt(){
   const el = document.getElementById('examshell');
   const t = attemptState.test; const c = t.config;
@@ -1197,19 +1336,25 @@ function drawAttempt(){
       <div class="instr">
         <h2 style="margin-bottom:14px;">Instructions</h2>
         <ul>
-          <li>You will have <strong>${fmtTime(available)}</strong> to complete this test${c.deadlineAt? ' (limited by the test deadline)':''}.</li>
-          <li>The timer starts the moment you click Start and cannot be paused.</li>
+          <li>You will have about <strong>${fmtTime(available)}</strong> to complete this test${c.deadlineAt? ' (limited by the test deadline)':''} — the exact allowance is fixed the moment you start.</li>
+          <li>The timer starts the moment you click Start, is enforced by the server, and cannot be paused, reset, or extended by changing your device's clock.</li>
           <li>${c.allowReview? 'You can move between questions freely and change answers before submitting.':'Questions must be answered in order and cannot be revisited.'}</li>
           <li>Switching tabs or windows is recorded and shown to your teacher.</li>
+          <li>If you refresh or reopen this link, your exam resumes exactly where you left off, with the same time remaining.</li>
           <li>The test submits automatically when time runs out.</li>
         </ul>
-        <button class="btn amber" onclick="beginExam()">Start Test</button>
+        <button class="btn amber" onclick="startAttempt()">Start Test</button>
       </div>`;
     return;
   }
 
   if(attemptState.phase==='exam'){
     drawExam();
+    return;
+  }
+
+  if(attemptState.phase==='alreadysubmitted'){
+    el.innerHTML = `<div class="instr center"><h2>Already submitted</h2><p class="muted">You've already completed this test from this device. If you need your result, ask your teacher.</p></div>`;
     return;
   }
 
@@ -1226,49 +1371,101 @@ function submitDetails(){
     section: document.getElementById('s_section').value.trim()
   };
   attemptState.phase='instructions';
-  persistAttempt();
   drawAttempt();
 }
-function shuffle(arr, seed){
-  const a=[...arr]; let s=seed||1;
-  const rnd=()=>{ s=(s*9301+49297)%233280; return s/233280; };
-  for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+
+/** Create a brand-new attempt document (the one-time "Start" action).
+    startedAt/availableMs are computed here, but firestore.rules independently
+    re-validates them against the server's own clock and the test's real
+    duration/deadline before allowing the write — a client can't just send
+    a bigger availableMs to buy extra time. */
+async function startAttempt(){
+  const el = document.getElementById('examshell');
+  el.innerHTML = `<div class="fullload"><span class="spinner"></span>Starting…</div>`;
+  const t = attemptState.test, c = t.config;
+  const now = Date.now();
+  const deadlineLimit = c.deadlineAt ? (c.deadlineAt - now) : null;
+  const availableMs = deadlineLimit!=null ? Math.max(0, Math.min(c.duration*60000, deadlineLimit)) : c.duration*60000;
+  const order = c.randomizeQ ? shuffle(t.questions.map(q=>q.id)) : t.questions.map(q=>q.id);
+  const optOrder = {};
+  t.questions.forEach(q=>{ optOrder[q.id] = c.randomizeOpt ? shuffle(q.options.map(o=>o.id)) : q.options.map(o=>o.id); });
+
+  const attempt = {
+    testId: t.id, student: attemptState.student, order, optOrder,
+    answers:{}, marked:{}, tabSwitches:0, currentIdx:0,
+    startedAt: now, availableMs, status:'in-progress'
+  };
+  try{
+    const ref = await dbf.collection('tests').doc(t.id).collection('attempts').add(attempt);
+    applyAttemptResponse(attempt, ref.id);
+  }catch(err){
+    el.innerHTML = `<div class="empty"><h3>Couldn't start the test</h3><p class="small muted">${esc(err.message)}</p></div>`;
+  }
+}
+function shuffle(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
   return a;
 }
-function beginExam(){
-  const t=attemptState.test;
-  const now=Date.now();
-  const seed = now % 100000;
-  let order = t.questions.map(q=>q.id);
-  if(t.config.randomizeQ) order = shuffle(order, seed);
-  attemptState.order = order;
-  attemptState.startedAt = now;
-  attemptState.currentIdx = 0;
-  attemptState.optOrder = {};
-  t.questions.forEach(q=>{
-    attemptState.optOrder[q.id] = t.config.randomizeOpt? shuffle(q.options.map(o=>o.id), seed+q.id.length) : q.options.map(o=>o.id);
-  });
-  attemptState.phase='exam';
-  persistAttempt();
-  drawAttempt();
+
+/** The actual fix for the refresh bug: the timer interval and the
+    tab-switch listener are attached whenever the exam phase is entered —
+    on a fresh start AND on every resume — instead of only once inside a
+    "begin" action that never runs again after a refresh. */
+function attachExamRuntime(){
+  document.removeEventListener('visibilitychange', onVisChange);
   document.addEventListener('visibilitychange', onVisChange);
+  clearInterval(window._examTimer);
+  clearInterval(window._heartbeatTimer);
   window._examTimer = setInterval(tickTimer, 1000);
+  window._heartbeatTimer = setInterval(heartbeat, 15000);
 }
 function onVisChange(){
   if(document.hidden && attemptState.phase==='exam'){
     attemptState.tabSwitches = (attemptState.tabSwitches||0)+1;
-    persistAttempt();
+    syncProgressSafe();
   }
 }
+function isDeadlineError(err){
+  // firestore.rules rejects the write once its own clock says time is up —
+  // that surfaces here as a plain permission-denied, since rules can only
+  // ever allow or deny, not explain why.
+  return !!err && err.code==='permission-denied';
+}
+/** Push the current answers/marks/tab-switches straight to Firestore, and
+    refresh our clock-offset using Firestore's own serverTimestamp — this
+    is what keeps the visible timer honest without needing a Cloud
+    Function: the value written here is resolved by Firestore's servers,
+    not the browser, so it can't be affected by the device's clock. */
+async function syncProgress(){
+  if(!attemptState.attemptId) return;
+  const ref = attemptRef(attemptState.attemptId);
+  await ref.update({
+    answers: attemptState.answers, marked: attemptState.marked,
+    tabSwitches: attemptState.tabSwitches, currentIdx: attemptState.currentIdx,
+    heartbeatAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  const snap = await ref.get();
+  const hb = snap.data().heartbeatAt;
+  if(hb && hb.toMillis) attemptState.clockOffset = hb.toMillis() - Date.now();
+}
+function syncProgressSafe(){
+  syncProgress().catch(err=>{ if(isDeadlineError(err)) finishExam(true); });
+}
+async function heartbeat(){
+  if(attemptState.phase!=='exam') return;
+  try{ await syncProgress(); }
+  catch(err){ if(isDeadlineError(err)) finishExam(true); }
+}
+/** Remaining time, anchored to the server's clock (via the periodically
+    refreshed clockOffset) rather than the browser's own — so winding the
+    system clock back doesn't make more time appear to be left. */
 function remainingMs(){
-  const t=attemptState.test, c=t.config;
-  const deadlineLimit = c.deadlineAt? (c.deadlineAt - attemptState.startedAt) : Infinity;
-  const totalAvailable = Math.min(c.duration*60000, deadlineLimit);
-  const elapsed = Date.now()-attemptState.startedAt;
-  return totalAvailable - elapsed;
+  const estServerNow = Date.now() + (attemptState.clockOffset||0);
+  return attemptState.availableMs - (estServerNow - attemptState.startedAt);
 }
 function tickTimer(){
-  if(attemptState.phase!=='exam') { clearInterval(window._examTimer); return; }
+  if(attemptState.phase!=='exam'){ clearInterval(window._examTimer); return; }
   const rem = remainingMs();
   const tb=document.getElementById('timerbox');
   if(tb){ tb.textContent=fmtTime(rem); tb.classList.toggle('low', rem<60000); }
@@ -1334,19 +1531,19 @@ function selectOption(qid,oid){
   } else {
     attemptState.answers[qid]=[oid];
   }
-  persistAttempt(); drawExam();
+  syncProgressSafe(); drawExam();
 }
-function clearAnswer(qid){ delete attemptState.answers[qid]; persistAttempt(); drawExam(); }
-function toggleMark(qid){ attemptState.marked[qid]=!attemptState.marked[qid]; persistAttempt(); drawExam(); }
+function clearAnswer(qid){ delete attemptState.answers[qid]; syncProgressSafe(); drawExam(); }
+function toggleMark(qid){ attemptState.marked[qid]=!attemptState.marked[qid]; syncProgressSafe(); drawExam(); }
 function navQ(d){
   const t=attemptState.test;
   const ni=attemptState.currentIdx+d;
   if(ni<0||ni>=t.questions.length) return;
-  attemptState.currentIdx=ni; persistAttempt(); drawExam();
+  attemptState.currentIdx=ni; syncProgressSafe(); drawExam();
 }
 function jumpTo(i){
   if(!attemptState.test.config.allowReview && i<attemptState.currentIdx) return;
-  attemptState.currentIdx=i; drawExam();
+  attemptState.currentIdx=i; syncProgressSafe(); drawExam();
 }
 function confirmSubmit(){
   const t=attemptState.test;
@@ -1356,82 +1553,76 @@ function confirmSubmit(){
 }
 async function finishExam(auto){
   clearInterval(window._examTimer);
+  clearInterval(window._heartbeatTimer);
   document.removeEventListener('visibilitychange', onVisChange);
   const t=attemptState.test;
-  const timeTakenMs = Date.now()-attemptState.startedAt;
+  const now = Date.now();
+  const estServerNow = now + (attemptState.clockOffset||0);
+  const timeTakenMs = Math.min(estServerNow - attemptState.startedAt, attemptState.availableMs);
 
-  // Firebase-backed tests have had their answer key stripped client-side
-  // (see saveTest()), so grading has to happen on the server, where the
-  // key actually lives. This is what keeps a student from reading the
-  // correct answers out of devtools before submitting.
-  if(FIREBASE_ENABLED && t.slug){
-    document.getElementById('examshell').innerHTML = `<div class="fullload"><span class="spinner"></span>Submitting…</div>`;
-    try{
-      const gradeFn = firebase.functions().httpsCallable('gradeTest');
-      const res = await gradeFn({
-        testId: t.id, answers: attemptState.answers, student: attemptState.student,
-        tabSwitches: attemptState.tabSwitches||0, timeTakenMs, autoSubmitted: auto
-      });
-      attemptState.result = res.data;
-      attemptState.phase='submitted';
-      persistAttempt();
-      drawAttempt();
-    }catch(err){
-      document.getElementById('examshell').innerHTML = `
-        <div class="empty"><h3>Couldn't submit</h3>
-        <p class="small muted">${esc(err.message)}</p>
-        <p class="small muted">Your answers are saved on this device — reopen this link once you're back online and try again.</p>
-        <button class="btn amber" style="margin-top:10px;" onclick="finishExam(${auto})">Try again</button></div>`;
-    }
-    return;
-  }
-
-  // Offline / embedded-link mode: the test object carries its own answer
-  // key, so grading can safely happen right here in the browser.
-  let score=0, maxScore=0, correctCount=0, incorrectCount=0, unattempted=0;
+  // Grading happens right here, in the student's browser — there's no
+  // server-side compute layer in this free-tier build, so this test's
+  // question data already includes the correct answers (see saveTest()).
+  // firestore.rules is what still keeps the *timer* honest: this write is
+  // independently checked against the server's own clock and rejected if
+  // it arrives too long after the real deadline, regardless of what this
+  // calculation above says.
+  let score=0, maxScore=0, correctCount=0, incorrectCount=0, unattempted=0, negativeDeduction=0;
   const perQuestionCorrect={};
   t.questions.forEach(q=>{
     maxScore += q.marks;
-    const ans = attemptState.answers[q.id]||[];
-    if(ans.length===0){ unattempted++; return; }
-    const correctSet = new Set(q.correct);
-    const ansSet = new Set(ans);
-    const isCorrect = correctSet.size===ansSet.size && [...correctSet].every(c=>ansSet.has(c));
+    const given = attemptState.answers[q.id] || [];
+    if(given.length===0){ unattempted++; return; }
+    const correct = new Set(q.correct||[]);
+    const givenSet = new Set(given);
+    const isCorrect = correct.size===givenSet.size && [...correct].every(c=>givenSet.has(c));
     perQuestionCorrect[q.id]=isCorrect;
     if(isCorrect){ score+=q.marks; correctCount++; }
-    else {
+    else{
       incorrectCount++;
-      const neg = t.config.negativeMarking ? (q.negativeMarks || t.config.negativeValue) : 0;
+      const neg = t.config.negativeMarking? (q.negativeMarks||t.config.negativeValue):0;
+      negativeDeduction += neg;
       score -= neg;
     }
   });
   score = Math.max(0, score);
   const percentage = maxScore? (score/maxScore*100):0;
-  const result = {
-    id: uid('r'), testId:t.id, testName:t.meta.name,
-    student: attemptState.student,
-    answers: attemptState.answers,
-    perQuestionCorrect,
+
+  const graded = {
+    testId: t.id, testName: t.meta.name, student: attemptState.student,
+    answers: attemptState.answers, marked: attemptState.marked, perQuestionCorrect,
     score: Math.round(score*100)/100, maxScore, percentage,
     correctCount, incorrectCount, unattempted,
-    timeTakenMs,
-    tabSwitches: attemptState.tabSwitches||0,
-    submittedAt: Date.now(),
-    autoSubmitted: auto
+    negativeDeduction: Math.round(negativeDeduction*100)/100,
+    timeTakenMs, tabSwitches: attemptState.tabSwitches||0,
+    submittedAt: now, autoSubmitted: !!auto, status:'submitted'
   };
-  addResult(t.id, result);
-  attemptState.phase='submitted';
-  attemptState.result=result;
-  persistAttempt();
-  drawAttempt();
+
+  document.getElementById('examshell').innerHTML = `<div class="fullload"><span class="spinner"></span>Submitting…</div>`;
+  try{
+    await attemptRef(attemptState.attemptId).update(graded);
+    graded.id = attemptState.attemptId;
+    attemptState.result = graded;
+    attemptState.phase='submitted';
+    localStorage.setItem('testlink_result_'+t.id, JSON.stringify(graded));
+    localStorage.removeItem(attemptState.storageKey); // the attempt is finished; the cached result above takes over for redisplay
+    drawAttempt();
+  }catch(err){
+    document.getElementById('examshell').innerHTML = `
+      <div class="empty"><h3>Couldn't submit</h3>
+      <p class="small muted">${esc(err.message)}</p>
+      <p class="small muted">Nothing has been lost — your answers up to this point are saved on the server. Reopen this link once you're back online and it will pick up right where you left off.</p>
+      <button class="btn amber" style="margin-top:10px;" onclick="finishExam(${auto})">Try again</button></div>`;
+  }
 }
 function drawResult(){
   const el=document.getElementById('examshell');
   const t=attemptState.test, r=attemptState.result, vis=t.config.resultVisibility;
   const passed = r.percentage>=t.config.passPercent;
+  const showDeduction = t.config.negativeMarking && r.negativeDeduction;
 
   if(vis==='hidden'){
-    el.innerHTML = `<div class="resultcard card"><h2>Submitted</h2><p class="muted">Your teacher will release your result later.</p>${downloadResultBtn(r)}</div>`;
+    el.innerHTML = `<div class="resultcard card"><h2>Submitted</h2><p class="muted">Your response has been recorded. Your teacher will release your result later.</p></div>`;
     return;
   }
   el.innerHTML = `
@@ -1442,25 +1633,15 @@ function drawResult(){
         : `<div class="score">${r.percentage.toFixed(0)}%</div>`}
       <div style="margin:14px 0;"><span class="pill ${passed?'pass':'fail'}">${passed?'PASS':'FAIL'}</span></div>
       ${vis==='immediate'? `
-      <div class="resultgrid">
+      <div class="resultgrid" style="grid-template-columns:repeat(${showDeduction?4:3},1fr);">
         <div><div class="n">${r.correctCount}</div><div class="l">Correct</div></div>
         <div><div class="n">${r.incorrectCount}</div><div class="l">Incorrect</div></div>
         <div><div class="n">${r.unattempted}</div><div class="l">Unattempted</div></div>
+        ${showDeduction? `<div><div class="n" style="color:var(--red);">-${r.negativeDeduction}</div><div class="l">Negative deduction</div></div>`:''}
       </div>`:''}
       <div class="muted small">Time taken: ${fmtTime(r.timeTakenMs)}${r.autoSubmitted? ' · auto-submitted at time limit':''}</div>
-      ${downloadResultBtn(r)}
+      <p class="small muted" style="margin-top:16px;">Your result has already been saved to your teacher's dashboard.</p>
     </div>`;
-}
-function downloadResultBtn(r){
-  return `<div style="margin-top:18px;">
-    <button class="btn secondary small" onclick='downloadResult(${JSON.stringify(JSON.stringify(r))})'>Download result file for teacher</button>
-    <div class="small muted" style="margin-top:6px;">If your teacher is on a different device, send them this file so it appears in their results.</div>
-  </div>`;
-}
-function downloadResult(json){
-  const r = JSON.parse(json);
-  const blob = new Blob([json], {type:'application/json'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`result_${r.student.name.replace(/\s+/g,'_')}.json`; a.click();
 }
 </script>
 </body>

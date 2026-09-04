@@ -1,9 +1,10 @@
-# TestLink — going from local-only to a real synced website
+# TestLink — setup guide
 
-The app works right now with zero setup: open `index.html`, everything
-saves to your browser's localStorage. That's fine for testing on one
-machine, but a shareable link only helps other students on other devices
-once you turn on Firebase. This takes about 15 minutes.
+This build runs entirely on Firebase's free **Spark** plan: Authentication
++ Firestore + (optionally) Hosting. There is no Cloud Functions step, and
+nothing anywhere in this project ever requires a billing account or a
+credit card. It will not run at all — no local/offline mode exists —
+until it's connected to a Firebase project, which takes about 10 minutes.
 
 ## 1. Create the Firebase project
 
@@ -12,7 +13,7 @@ once you turn on Firebase. This takes about 15 minutes.
 2. In the left sidebar: **Build → Authentication → Get started →
    Sign-in method → Email/Password → Enable → Save.**
 3. In the left sidebar: **Build → Firestore Database → Create database
-   → Start in production mode** (we'll paste real rules in a minute) →
+   → Start in production mode** (we'll add real rules in step 4) →
    pick a region close to you.
 
 ## 2. Get your web app config
@@ -34,69 +35,78 @@ const firebaseConfig = {
 };
 ```
 
-Replace every `PASTE_...` value with what Firebase gave you, save the
-file, and reload it in a browser. You should now see a **Sign in /
-Create account** screen instead of the dashboard — that's the app
-detecting Firebase is configured. Create a teacher account and you're in.
+Replace every `PASTE_...` value with what Firebase gave you and save the
+file. Until you do this, opening `index.html` shows a "Server setup
+required" message instead of the app — that's expected.
 
-## 4. Deploy the security rules
+## 4. Publish the security rules (this is the step that actually fixes access errors)
 
-Without this step, Firestore's default production rules block
-everything, including your own app.
+Firestore starts in "production mode" with default rules that deny
+*everything* — that's why you'll see "Missing or insufficient
+permissions" anywhere in the app until this step is done. No CLI needed:
 
-1. Install the CLI once: `npm install -g firebase-tools`
-2. `firebase login`
-3. In this folder: `firebase init firestore` → pick your project →
-   when it asks for a rules file, point it at the included
-   `firestore.rules` (or paste its contents into the one it generates).
-4. `firebase deploy --only firestore:rules`
+1. In the Firebase Console: **Build → Firestore Database → Rules** tab.
+2. Open `firestore.rules` from this folder, select all, copy it.
+3. Paste it over whatever is currently in the Rules editor, replacing it entirely.
+4. Click **Publish**.
 
 Read the comment block at the bottom of `firestore.rules` — it explains
-exactly what these rules do and do not protect against.
+exactly what these rules do and do not protect against, in plain terms.
 
 ## 5. Put the file online
 
-Pick one:
+Pick one — both are free, and neither needs the command line if you'd
+rather avoid it:
 
-- **Fastest**: push this folder to a GitHub repo → GitHub Pages
-  (Settings → Pages → deploy from branch) → your `index.html` is live
-  at `https://yourname.github.io/repo/`.
-- **Firebase Hosting** (keeps everything in one place):
-  `firebase init hosting` (public directory = this folder) →
-  `firebase deploy --only hosting`.
+- **GitHub Pages** — push this folder to a GitHub repo → repo Settings →
+  Pages → deploy from branch → your `index.html` is live at
+  `https://yourname.github.io/repo/`.
+- **Firebase Hosting** — needs the CLI once: `npm install -g firebase-tools`,
+  then `firebase login`, `firebase init hosting` (choose your project,
+  public directory = this folder), then `firebase deploy --only hosting`.
 
-Either way, the shareable links your teachers generate will work from
-any device, because the test data now lives in Firestore instead of
-being embedded in the URL.
+Either way, every teacher who signs up gets their own tests, question
+bank, and results — visible from any device, any browser, after just
+logging back in. Nothing is stored in the browser itself except a small
+pointer used to resume an exam in progress (see the note at the bottom
+of this guide).
 
-## 6. Deploy secure grading (required for synced tests to be gradable)
+## 6. Try the full loop once
 
-Once Firebase is on, publishing a test strips the answer key out of the
-document students can read — that's what makes it safe to use for
-anything grade-bearing. But it means grading has moved to a Cloud
-Function, so **a synced test won't be able to grade itself until you
-deploy this once**:
+1. Open the live URL, create a teacher account.
+2. Create a test, extract or paste some questions, verify them, publish.
+3. Open the share link in a private/incognito window (as a "student"),
+   complete and submit it — you should see your score immediately.
+4. Switch back to your teacher tab and open that test's Results page —
+   the submission should already be there, no import step needed.
+5. Refresh the student tab mid-exam next time (before submitting) to
+   confirm the timer keeps counting down normally instead of freezing —
+   that's the specific bug this architecture was built to fix.
 
-```
-firebase init functions      # choose your existing project, JavaScript, and
-                              # when it asks to overwrite functions/, say yes
-                              # (this repo's functions/index.js is already correct)
-firebase deploy --only functions
-```
+## An important, deliberate tradeoff in this build
 
-That's it — no code changes needed, this repo's `functions/index.js` and
-`functions/package.json` are already wired to match the client. If you
-publish a test before deploying this, students will see a clear "couldn't
-submit" message with a retry button rather than a silent failure or an
-exposed answer key.
+Because there's no Cloud Functions (no server-side compute at all), a
+published test's questions — including the correct answers — are fully
+readable by anyone with the link, including via browser developer tools.
+This is what makes instant, on-submit grading possible without a paid
+plan. If that's not an acceptable tradeoff for a particular test (e.g. a
+graded exam rather than a practice quiz), the fix is reintroducing a
+Cloud Function that holds the only copy of the answer key — which has
+already been built once for this project and can be swapped back in, at
+the cost of Firebase requiring a billing method on file for Cloud
+Functions (even though actual usage costs $0 at classroom scale).
 
-(Local-only mode, without Firebase, still grades entirely in the browser
-as before — this step only applies once you've turned Firebase on.)
+## What still runs entirely in the browser (by design)
 
-## What still doesn't require a backend at all
-
-PDF/image extraction, the question verification screen, test
-configuration, and the whole teacher wizard run entirely in the
-browser already — none of that changes with Firebase. Firebase is only
-responsible for: teacher accounts, and making tests/results visible
-across devices instead of stuck in one browser's localStorage.
+PDF/image OCR extraction and the question verification screen run
+client-side, same as always. The exam timer's *anchor point* — when an
+attempt started, and how much time it's allowed — is decided once by the
+browser but then locked in by Firestore's security rules using the
+server's own clock (`request.time`), not the browser's: every save,
+including the final submission, is checked against that server clock, so
+changing a device's system clock doesn't buy extra time. The only thing
+kept in browser storage is a small pointer — the attempt's ID — in
+`localStorage`, purely so a refreshed or reopened tab knows which
+Firestore record to resume; it never holds the timer or the answer data
+itself, and a cached copy of a student's own final result (so revisiting
+the same link on the same device shows it again without re-fetching).
