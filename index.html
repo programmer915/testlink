@@ -263,16 +263,13 @@ function letter(i){ return String.fromCharCode(65+i); }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -1123,12 +1120,14 @@ function viewResults(testId){
     ${n===0? `<div class="empty card"><h3>No submissions yet</h3><p>As soon as a student submits, from any device, it appears here automatically.</p></div>`:`
     <div class="card pad" style="overflow:auto;">
       <table class="results">
-        <thead><tr><th>Student</th><th>Class/Roll</th><th>Score</th><th>%</th><th>Tab switches</th><th>Time</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Mobile Number</th><th>Score</th><th>%</th><th>Tab switches</th><th>Time</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${results.map(r=>`
             <tr>
               <td>${esc(r.student.name)}</td>
-              <td>${esc(r.student.class||'')} ${esc(r.student.roll||'')}</td>
+              <td>${esc(r.student.class||'')}</td>
+              <td>${esc(r.student.roll||'')}</td>
+              <td>${esc(r.student.mobile||'')}</td>
               <td>${r.score} / ${r.maxScore}</td>
               <td>${r.percentage.toFixed(1)}%</td>
               <td>${r.tabSwitches}${r.tabSwitches>2?' ⚠':''}</td>
@@ -1150,7 +1149,7 @@ function openResponseModal(testId, resultId){
   modal.innerHTML = `
     <div class="modal" style="max-width:680px;">
       <h3 style="margin-bottom:2px;">${esc(result.student.name)}</h3>
-      <p class="muted small" style="margin-bottom:16px;">${esc(result.student.class||'')} ${esc(result.student.roll||'')} · ${result.score} / ${result.maxScore} (${result.percentage.toFixed(1)}%)</p>
+      <p class="muted small" style="margin-bottom:16px;">${esc(result.student.class||'')} ${esc(result.student.roll||'')}${result.student.mobile? ' · '+esc(result.student.mobile):''} · ${result.score} / ${result.maxScore} (${result.percentage.toFixed(1)}%)</p>
       ${test.questions.map((q,i)=>{
         const given = result.answers[q.id]||[];
         const correctIds = q.correct||[];
@@ -1179,8 +1178,8 @@ function openResponseModal(testId, resultId){
 }
 function exportCSV(testId){
   const db=getDB(); const results=db.results[testId]||[];
-  const rows=[['Name','Class','Roll','Score','Max','Percentage','TabSwitches','TimeTakenSec','SubmittedAt']];
-  results.forEach(r=>rows.push([r.student.name, r.student.class||'', r.student.roll||'', r.score, r.maxScore, r.percentage.toFixed(1), r.tabSwitches, Math.round(r.timeTakenMs/1000), new Date(r.submittedAt).toISOString()]));
+  const rows=[['Name','Class','Roll','Mobile Number','Score','Max','Percentage','TabSwitches','TimeTakenSec','SubmittedAt']];
+  results.forEach(r=>rows.push([r.student.name, r.student.class||'', r.student.roll||'', r.student.mobile||'', r.score, r.maxScore, r.percentage.toFixed(1), r.tabSwitches, Math.round(r.timeTakenMs/1000), new Date(r.submittedAt).toISOString()]));
   const csv = rows.map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='results.csv'; a.click();
@@ -1225,7 +1224,7 @@ async function mountAttempt(hash){
 
   attemptState = {
     phase:'details', test, storageKey:'testlink_attemptid_'+test.id,
-    student:{name:'',class:'',roll:'',section:''},
+    student:{name:'',class:'',roll:'',mobile:''},
     attemptId:null, answers:{}, marked:{}, tabSwitches:0, currentIdx:0,
     startedAt:null, availableMs:null, order:null, optOrder:null, clockOffset:0
   };
@@ -1326,7 +1325,7 @@ function drawAttempt(){
           <div><label class="field">Full name</label><input type="text" id="s_name" value="${esc(attemptState.student.name)}"></div>
           <div><label class="field">Roll number</label><input type="text" id="s_roll" value="${esc(attemptState.student.roll)}"></div>
           <div><label class="field">Class</label><input type="text" id="s_class" value="${esc(attemptState.student.class)}"></div>
-          <div><label class="field">Section</label><input type="text" id="s_section" value="${esc(attemptState.student.section)}"></div>
+          <div><label class="field">Mobile Number</label><input type="text" id="s_mobile" value="${esc(attemptState.student.mobile)}"></div>
         </div>
         <button class="btn amber" onclick="submitDetails()">Continue →</button>
       </div>`;
@@ -1346,7 +1345,7 @@ function drawAttempt(){
           <li>If you refresh or reopen this link, your exam resumes exactly where you left off, with the same time remaining.</li>
           <li>The test submits automatically when time runs out.</li>
         </ul>
-        <button class="btn amber" onclick="startAttempt()">Start Test</button>
+        <button class="btn amber" onclick="showDisclaimerModal()">Start Test</button>
       </div>`;
     return;
   }
@@ -1366,12 +1365,40 @@ function drawAttempt(){
     return;
   }
 }
+/** A final confirmation modal before the timer actually starts, spelling
+    out exactly what's at stake: how many questions, how many marks, and
+    the negative marking rule (if any). */
+function showDisclaimerModal(){
+  const t = attemptState.test, c = t.config;
+  const totalQuestions = t.questions.length;
+  const totalMarks = t.questions.reduce((a,q)=>a+q.marks,0);
+  const negText = c.negativeMarking
+    ? `Yes — ${c.negativeValue} mark${c.negativeValue===1?'':'s'} deducted for each incorrect answer by default (individual questions may specify a different deduction).`
+    : 'No negative marking — incorrect and unattempted questions are not penalized.';
+  const modal=document.createElement('div');
+  modal.className='modalbg';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:440px;">
+      <h3 style="margin-bottom:14px;">Before you begin</h3>
+      <div class="resultgrid" style="grid-template-columns:1fr 1fr; margin-bottom:18px;">
+        <div><div class="n">${totalQuestions}</div><div class="l">Total Questions</div></div>
+        <div><div class="n">${totalMarks}</div><div class="l">Total Marks</div></div>
+      </div>
+      <p class="small" style="margin-bottom:4px;"><strong>Negative marking</strong></p>
+      <p class="small muted" style="margin-bottom:22px;">${negText}</p>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Cancel</button>
+        <button class="btn amber" onclick="this.closest('.modalbg').remove(); startAttempt();">I Understand — Start Test</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
 function submitDetails(){
   attemptState.student = {
     name: document.getElementById('s_name').value.trim() || 'Anonymous',
     roll: document.getElementById('s_roll').value.trim(),
     class: document.getElementById('s_class').value.trim(),
-    section: document.getElementById('s_section').value.trim()
+    mobile: document.getElementById('s_mobile').value.trim()
   };
   attemptState.phase='instructions';
   drawAttempt();
