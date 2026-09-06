@@ -76,25 +76,39 @@ of this guide).
 1. Open the live URL, create a teacher account.
 2. Create a test, extract or paste some questions, verify them, publish.
 3. Open the share link in a private/incognito window (as a "student"),
-   complete and submit it — you should see your score immediately.
+   complete and submit it — you should see your score immediately if the
+   test's result visibility is "Show immediately" or "Score only" (the
+   default). If you set it to "Hidden until released", you'll just see a
+   plain confirmation instead — that's expected, see below.
 4. Switch back to your teacher tab and open that test's Results page —
    the submission should already be there, no import step needed.
 5. Refresh the student tab mid-exam next time (before submitting) to
    confirm the timer keeps counting down normally instead of freezing —
    that's the specific bug this architecture was built to fix.
 
-## An important, deliberate tradeoff in this build
+## An important choice this build gives you, per test
 
 Because there's no Cloud Functions (no server-side compute at all), a
-published test's questions — including the correct answers — are fully
+published test set to **"Show immediately" or "Score only"** result
+visibility has its questions — including the correct answers — fully
 readable by anyone with the link, including via browser developer tools.
 This is what makes instant, on-submit grading possible without a paid
-plan. If that's not an acceptable tradeoff for a particular test (e.g. a
-graded exam rather than a practice quiz), the fix is reintroducing a
-Cloud Function that holds the only copy of the answer key — which has
-already been built once for this project and can be swapped back in, at
-the cost of Firebase requiring a billing method on file for Cloud
-Functions (even though actual usage costs $0 at classroom scale).
+plan.
+
+If that's not an acceptable tradeoff for a particular test (e.g. a graded
+exam rather than a practice quiz), set its result visibility to **"Hidden
+until released"** in Configure instead. For those tests, the answer key
+never reaches a student's browser at all — it's stored privately, and
+grading happens later, in your own browser, when you open that test's
+Results page. The cost: the student sees no score at all right after
+submitting, only a plain confirmation.
+
+If you want instant results *and* full secrecy together, the fix is
+reintroducing a Cloud Function that holds the only copy of the answer key
+regardless of the visibility setting — already built once for this
+project and can be swapped back in, at the cost of Firebase requiring a
+billing method on file for Cloud Functions (even though actual usage
+costs $0 at classroom scale).
 
 ## What still runs entirely in the browser (by design)
 

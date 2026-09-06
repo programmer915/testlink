@@ -68,7 +68,30 @@ service cloud.firestore {
           // clock, so changing a device's system clock has no effect on it.
           request.time.toMillis() <= resource.data.startedAt + resource.data.availableMs + 60000;
 
-        allow delete: if false;
+        // Only the owning teacher can delete an attempt — this is the
+        // "remove a wrong/duplicate submission" tool in the Results view.
+        // Students can never delete anything, including their own attempt.
+        allow delete: if isOwner(testId);
+      }
+
+      // ---- mobile-number attempt limiting ------------------------------
+      // One document per (test, mobile number). Firestore treats a write
+      // to an existing document ID as an "update", not a "create" — since
+      // this rule only ever allows *create*, a second attempt from the
+      // same number is rejected outright, with no query or Cloud Function
+      // needed to check "has this number already been used".
+      match /mobileClaims/{mobileKey} {
+        allow create: if get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published';
+        allow get, list, update, delete: if isOwner(testId);
+      }
+
+      // ---- private answer key (only for "hidden" result-visibility tests) --
+      // Used only when a test's resultVisibility is 'hidden' — see saveTest()
+      // in index.html. For 'immediate'/'scoreOnly' tests, the answer key
+      // travels with the public test document instead (the tradeoff already
+      // documented below), and this subcollection is simply never written.
+      match /private/{doc} {
+        allow read, write: if isOwner(testId);
       }
     }
 
@@ -84,34 +107,51 @@ service cloud.firestore {
   Architecture note (free Spark plan — no Cloud Functions, no billing
   account required anywhere):
 
-  This build made a deliberate tradeoff: a published test's document is
-  fully public-readable, including each question's correct answer. That's
-  what lets a student's own browser grade their exam immediately and show
-  a full result the instant they submit, with zero server-side compute.
-  The cost is that a technically curious student could find the answer
-  key via their browser's developer tools before or during the exam.
+  Answer-key handling is now per-test, controlled by the existing "Result
+  visibility" setting in Configure:
+
+    - "Show immediately" / "Score only" — the answer key travels inside
+      the public test document, so a student's own browser can grade
+      their exam instantly on submit. The cost: a technically curious
+      student could find the answer key via developer tools. This is the
+      original tradeoff for this build, kept for tests where instant
+      feedback matters more than key secrecy.
+
+    - "Hidden until released" — saveTest() strips `correct` out of the
+      published test entirely and stores it in tests/{id}/private/
+      answerKey instead, which only the owning teacher can ever read.
+      A student's browser submits raw answers only; grading happens
+      later, in the teacher's own authenticated session, the moment they
+      open the Results page (see gradeAttempt()/subscribeResults() in
+      index.html). The student's browser never has the key, before,
+      during, or after the exam — full secrecy, at the cost of the
+      student not seeing a score at all until the teacher looks.
 
   What these rules still genuinely enforce, with no server code at all:
-    - A teacher can only ever read/write their own tests and question bank
-      (not other teachers').
+    - A teacher can only ever read/write their own tests, question bank,
+      and answer keys (not other teachers').
     - An exam's timer can't be extended by editing a device's clock: every
       write to an attempt — including the final submission — is checked
       against Firestore's own request.time, not anything the client sends.
     - A fresh attempt's time allowance is capped at what the test's actual
       duration/deadline permit, no matter what a client tries to write.
-    - Once an attempt is submitted, it's frozen — no further updates.
+    - Once an attempt is submitted, no one but the owning teacher can
+      modify or remove it — students can never edit or delete anything.
     - A student can fetch (resume) only a specific attempt they already
       know the ID of; they cannot list or browse other students' attempts.
-      Only the owning teacher can list all attempts for a test, which is
-      how the Results page works — each submitted attempt already carries
-      its own computed score, correctCount, etc., written by the student's
-      browser at submission time.
+      Only the owning teacher can list all attempts for a test.
+    - One mobile number = one attempt per test, enforced atomically by
+      Firestore's create-vs-update distinction rather than a query. A
+      determined student can still type a fake number, since there's no
+      SMS/OTP verification here — this stops accidental/casual re-attempts,
+      not a deliberately dishonest one. The teacher's "Remove" button (on
+      a submitted result) and "Release a mobile number" tool (for a
+      stuck, never-submitted attempt) both clear the claim so a genuine
+      retry is always possible.
 
-  If you outgrow this tradeoff later — e.g. this becomes a graded,
-  higher-stakes exam rather than a practice quiz — the fix is to bring
-  back a Cloud Function that holds the only copy of the answer key and
-  grades server-side, at the cost of requiring Firebase's Blaze plan
-  (still $0 for classroom-scale usage, but does require a billing method
-  on file). That version of this app has already been built before; ask
-  if you want to switch back to it.
+  If the answer-key tradeoff on "immediate"/"score only" tests ever needs
+  closing too, the fix is a Cloud Function that grades everything
+  server-side regardless of visibility setting — already built once for
+  this project, at the cost of Firebase requiring a billing method on
+  file (Blaze plan; still $0 at classroom scale). Ask if you want it back.
 */
