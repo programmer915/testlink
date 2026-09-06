@@ -270,13 +270,15 @@ function sanitizeMobile(m){ return (m||'').replace(/[^0-9]/g,''); }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY",
-  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
-  projectId: "PASTE_YOUR_PROJECT_ID",
-  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
+  apiKey: "AIzaSyDGmuIRkIHhB1xbhpJiqI82ejRu1_4eGRI",
+  authDomain: "paper-trail-700fb.firebaseapp.com",
+  projectId: "paper-trail-700fb",
+  storageBucket: "paper-trail-700fb.firebasestorage.app",
+  messagingSenderId: "721631882983",
+  appId: "1:721631882983:web:eb885b7a85fceecbc67c42",
+  measurementId: "G-2LBYL6ETWD"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
