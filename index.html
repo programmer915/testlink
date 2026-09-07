@@ -255,6 +255,7 @@ function fmtTime(ms){
   return (h>0?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
 }
 function fmtDateTime(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}); }
+function fmtDateTimeExact(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'medium'}); }
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function toast(msg){
   const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
@@ -270,15 +271,13 @@ function sanitizeMobile(m){ return (m||'').replace(/[^0-9]/g,''); }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyDGmuIRkIHhB1xbhpJiqI82ejRu1_4eGRI",
-  authDomain: "paper-trail-700fb.firebaseapp.com",
-  projectId: "paper-trail-700fb",
-  storageBucket: "paper-trail-700fb.firebasestorage.app",
-  messagingSenderId: "721631882983",
-  appId: "1:721631882983:web:eb885b7a85fceecbc67c42",
-  measurementId: "G-2LBYL6ETWD"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -295,7 +294,7 @@ if(FIREBASE_ENABLED){
    sign-in, and every write goes straight to Firestore. Close the tab,
    clear the browser, or open a different device and log in again — the
    data is exactly as you left it, because none of it ever lived here. */
-let localCache = {tests:{}, results:{}, bank:[]};
+let localCache = {tests:{}, results:{}, bank:[], unfinished:{}};
 function getDB(){ return localCache; }
 
 function saveTest(test){
@@ -396,13 +395,17 @@ function subscribeResults(testId){
   if(window._unsubResults) window._unsubResults();
   window._unsubResults = dbf.collection('tests').doc(testId).collection('attempts')
     .onSnapshot(async snap=>{
-      const submitted=[];
-      snap.forEach(d=>{ const a=d.data(); if(a.status==='submitted'){ a.id=d.id; submitted.push(a); } });
+      const submitted=[]; const unfinished=[];
+      snap.forEach(d=>{
+        const a=d.data(); a.id=d.id;
+        if(a.status==='submitted') submitted.push(a); else unfinished.push(a);
+      });
       const test = getDB().tests[testId];
       const needsGrading = test && submitted.some(a=>typeof a.percentage!=='number');
       const key = needsGrading ? await ensureAnswerKey(testId) : {};
       localCache.results[testId] = !test ? submitted
         : submitted.map(a=> typeof a.percentage==='number' ? a : gradeAttempt(test, key, a));
+      localCache.unfinished[testId] = unfinished;
       if(location.hash===`#/results/${testId}`) render();
     }, err=>toast('Sync error: '+err.message));
 }
@@ -785,11 +788,57 @@ function afterWizardRender(){ if(wizardStep==='upload') setupDragDrop(); }
 function persistDraft(){ saveTest(wizardDraft); }
 
 /* ---- Step 1: Upload ---- */
+const AI_CONVERSION_PROMPT = `I have a question paper that needs converting into a specific plain-text format so I can upload it to a quiz tool. Please reformat the question paper I paste below (or attach) into exactly this layout:
+
+1. <question text>
+A) <option A>
+B) <option B>
+C) <option C>
+D) <option D>
+Answer: <correct option letter>
+
+2. <question text>
+A) <option A>
+...
+
+Rules:
+- Number every question sequentially starting at 1, followed by a period and a space (e.g. "1. ").
+- Give each option a single capital letter followed by a closing parenthesis and a space (e.g. "A) ").
+- Include an "Answer: X" line right after each question's options, where X is the correct option's letter. If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
+- Output ONLY the reformatted questions in the format above — no headers, page numbers, explanations, or commentary.
+- Keep the original question text and options exactly as written; only reformat the layout and numbering.
+
+Here is the question paper to convert:
+[PASTE YOUR QUESTION PAPER TEXT OR ATTACH THE FILE HERE]`;
+function toggleAiPromptBox(){
+  const box = document.getElementById('aiPromptBox');
+  const btn = document.getElementById('aiPromptToggleBtn');
+  const show = box.style.display==='none';
+  box.style.display = show? 'block':'none';
+  btn.textContent = show? 'Hide AI prompt':'Show AI prompt';
+}
+function copyAiPrompt(){
+  const ta = document.getElementById('aiPromptText');
+  ta.select(); document.execCommand('copy');
+  toast('Prompt copied — paste it into your AI tool of choice');
+}
 function stepUpload(){
   return `
     <div class="card pad">
       <h3 style="font-size:16px; margin-bottom:4px;">Upload or paste the question paper</h3>
       <p class="muted small" style="margin-bottom:16px;">Drop a PDF, a photo/scan of the paper, or a .txt file — or just paste the text directly. Use a format like <span class="mono">1. Question text</span>, options as <span class="mono">A) ...</span>, and optionally <span class="mono">Answer: B</span> so the parser can pick them up. Nothing becomes final until you verify it in the next step.</p>
+
+      <div class="card pad" style="background:#FBF9F4; margin-bottom:16px;">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <strong class="small">Question paper in a messy or unsupported layout?</strong>
+          <button class="btn ghost small" onclick="toggleAiPromptBox()" id="aiPromptToggleBtn">Show AI prompt</button>
+        </div>
+        <p class="small muted" style="margin-top:6px; margin-bottom:0;">Copy this prompt into an AI assistant (Claude, ChatGPT, etc.) along with your original question paper — it'll reformat it into text this page can extract automatically.</p>
+        <div id="aiPromptBox" style="display:none; margin-top:12px;">
+          <textarea id="aiPromptText" rows="14" readonly style="font-family:'IBM Plex Mono',monospace; font-size:12px;">${esc(AI_CONVERSION_PROMPT)}</textarea>
+          <button class="btn secondary small" style="margin-top:8px;" onclick="copyAiPrompt()">Copy Prompt</button>
+        </div>
+      </div>
 
       <div class="dropzone" id="dz">
         <div style="font-size:14px; margin-bottom:8px;">Drag &amp; drop a PDF, image, or .txt file here, or</div>
@@ -1191,6 +1240,37 @@ function copyLink(){
 /* ============================================================
    RESULTS + ANALYTICS
    ============================================================ */
+function computeQuestionStats(test, results){
+  const total = results.length;
+  return test.questions.map((q,i)=>{
+    let attempted=0, correct=0, wrong=0, marksEarned=0;
+    results.forEach(r=>{
+      const given = r.answers && r.answers[q.id];
+      if(given && given.length){
+        attempted++;
+        if(r.perQuestionCorrect && r.perQuestionCorrect[q.id]){ correct++; marksEarned += q.marks; }
+        else{
+          wrong++;
+          const neg = test.config.negativeMarking ? (q.negativeMarks || test.config.negativeValue) : 0;
+          marksEarned -= neg;
+        }
+      }
+    });
+    const unattempted = total - attempted;
+    const accuracy = attempted? (correct/attempted*100) : null;
+    const avgMarks = total? (marksEarned/total) : 0;
+    let difficulty = 'No data';
+    if(accuracy!==null){
+      difficulty = accuracy>=75 ? 'Easy' : accuracy>=40 ? 'Moderate' : 'Hard';
+    }
+    return {
+      index:i+1, id:q.id, text:q.text, marks:q.marks,
+      total, attempted, unattempted, correct, wrong, accuracy, avgMarks, difficulty,
+      highWrongRate: attempted>0 && (wrong/attempted)>=0.5,
+      oftenUnattempted: total>0 && (unattempted/total)>=0.5
+    };
+  });
+}
 function viewResults(testId){
   const db=getDB();
   const test=db.tests[testId];
@@ -1203,17 +1283,10 @@ function viewResults(testId){
   const passN = results.filter(r=>r.percentage>=test.config.passPercent).length;
   const passPct = n? ((passN/n)*100).toFixed(0):0;
 
-  // per-question difficulty
-  const qStats = test.questions.map(q=>{
-    let correct=0, attempted=0;
-    results.forEach(r=>{
-      const a=r.answers[q.id];
-      if(a && a.length){ attempted++; if(r.perQuestionCorrect && r.perQuestionCorrect[q.id]) correct++; }
-    });
-    return {id:q.id, text:q.text, rate: attempted? Math.round((correct/attempted)*100): null};
-  }).filter(q=>q.rate!==null);
-  const hardest = qStats.length? qStats.reduce((a,b)=> a.rate<b.rate?a:b): null;
-  const easiest = qStats.length? qStats.reduce((a,b)=> a.rate>b.rate?a:b): null;
+  const qStats = computeQuestionStats(test, results);
+  const withData = qStats.filter(q=>q.accuracy!==null);
+  const hardest = withData.length? withData.reduce((a,b)=> a.accuracy<b.accuracy?a:b): null;
+  const easiest = withData.length? withData.reduce((a,b)=> a.accuracy>b.accuracy?a:b): null;
 
   return `
     <button class="btn ghost small" style="margin-bottom:10px;" onclick="location.hash='#/dashboard'">← Back to dashboard</button>
@@ -1226,11 +1299,6 @@ function viewResults(testId){
       <div class="stat"><div class="num">${low}%</div><div class="lbl">Lowest score</div></div>
       <div class="stat"><div class="num">${passPct}%</div><div class="lbl">Pass rate (≥${test.config.passPercent}%)</div></div>
     </div>
-
-    ${hardest||easiest? `<div class="card pad small" style="margin-bottom:20px;">
-      ${hardest? `<div>Most difficult: <strong>${esc(hardest.text.slice(0,70))}</strong> — ${hardest.rate}% correct</div>`:''}
-      ${easiest? `<div style="margin-top:4px;">Most successful: <strong>${esc(easiest.text.slice(0,70))}</strong> — ${easiest.rate}% correct</div>`:''}
-    </div>`:''}
 
     <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
       <strong class="small">Submissions</strong>
@@ -1263,7 +1331,159 @@ function viewResults(testId){
         </tbody>
       </table>
     </div>`}
+
+    <div class="section-title" style="margin-top:34px;">Question-wise Analytics</div>
+    ${n===0? `<div class="empty card"><p>Analytics appear once at least one student has submitted.</p></div>` : `
+    ${hardest||easiest? `<div class="card pad small" style="margin-bottom:16px;">
+      ${hardest? `<div>Most difficult: <strong>Q${hardest.index}</strong> — ${esc(hardest.text.slice(0,70))}${hardest.text.length>70?'…':''} (${hardest.accuracy.toFixed(0)}% accuracy)</div>`:''}
+      ${easiest? `<div style="margin-top:4px;">Easiest: <strong>Q${easiest.index}</strong> — ${esc(easiest.text.slice(0,70))}${easiest.text.length>70?'…':''} (${easiest.accuracy.toFixed(0)}% accuracy)</div>`:''}
+    </div>`:''}
+    <div class="card pad" style="overflow:auto;">
+      <table class="results">
+        <thead><tr><th>Q#</th><th>Question</th><th>Total</th><th>Attempted</th><th>Unattempted</th><th>Correct</th><th>Wrong</th><th>Accuracy</th><th>Avg Marks</th><th>Difficulty</th><th>Flags</th></tr></thead>
+        <tbody>
+          ${qStats.map(q=>`
+            <tr>
+              <td>Q${q.index}</td>
+              <td style="max-width:280px;">${esc(q.text.slice(0,90))}${q.text.length>90?'…':''}</td>
+              <td>${q.total}</td>
+              <td>${q.attempted}</td>
+              <td>${q.unattempted}</td>
+              <td>${q.correct}</td>
+              <td>${q.wrong}</td>
+              <td>${q.accuracy!==null? q.accuracy.toFixed(0)+'%' : '—'}</td>
+              <td>${q.avgMarks.toFixed(2)}</td>
+              <td><span class="badge ${q.difficulty==='Easy'?'verified':q.difficulty==='Hard'?'review':q.difficulty==='Moderate'?'edited':'draft'}">${q.difficulty}</span></td>
+              <td>
+                ${q.highWrongRate? '<span class="badge review" title="Half or more of attempts were wrong">⚠ High wrong rate</span> ':''}
+                ${q.oftenUnattempted? '<span class="badge draft" title="Half or more of students skipped this">⏭ Often skipped</span>':''}
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`}
+
+    ${renderUnfinishedSection(testId)}
   `;
+}
+let unfinishedFilter = 'all'; // 'all' | 'inprogress' | 'expired' | 'reset'
+function setUnfinishedFilter(f){ unfinishedFilter=f; render(); }
+/** In Progress / Expired / Reset aren't three separately-stored statuses.
+    Firestore only ever holds 'in-progress', 'submitted', or (once a
+    teacher resets one) 'invalidated'. In Progress vs. Expired is derived
+    here, at display time, purely from data already on the attempt: if
+    its own time allowance has elapsed but it was never submitted, the
+    student's browser is gone and it will never complete on its own. */
+function renderUnfinishedSection(testId){
+  const test = getDB().tests[testId];
+  const raw = getDB().unfinished[testId] || [];
+  const now = Date.now();
+  const withStatus = raw.map(a=>{
+    let status;
+    if(a.status==='invalidated') status='Reset';
+    else status = (now - a.startedAt > a.availableMs) ? 'Expired' : 'In Progress';
+    return {...a, _status: status, _elapsed: now - a.startedAt};
+  });
+  const counts = {
+    inprogress: withStatus.filter(a=>a._status==='In Progress').length,
+    expired: withStatus.filter(a=>a._status==='Expired').length,
+    reset: withStatus.filter(a=>a._status==='Reset').length
+  };
+  const filterMap = {inprogress:'In Progress', expired:'Expired', reset:'Reset'};
+  const filtered = unfinishedFilter==='all' ? withStatus : withStatus.filter(a=>a._status===filterMap[unfinishedFilter]);
+  const totalQ = test? test.questions.length : '?';
+
+  return `
+    <div class="section-title" style="margin-top:34px;">Unfinished Attempts</div>
+    <div class="row" style="gap:8px; margin-bottom:14px;">
+      <button class="btn ${unfinishedFilter==='all'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('all')">All (${withStatus.length})</button>
+      <button class="btn ${unfinishedFilter==='inprogress'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('inprogress')">In Progress (${counts.inprogress})</button>
+      <button class="btn ${unfinishedFilter==='expired'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('expired')">Expired (${counts.expired})</button>
+      <button class="btn ${unfinishedFilter==='reset'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('reset')">Reset (${counts.reset})</button>
+    </div>
+    ${filtered.length===0? `<div class="empty card"><p>No matching attempts.</p></div>` : `
+    <div class="card pad" style="overflow:auto;">
+      <table class="results">
+        <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Started At</th><th>Time Elapsed</th><th>Last Activity</th><th>Answered</th><th>Tab switches</th><th>Status</th><th></th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(a=>{
+            const answered = Object.keys(a.answers||{}).length;
+            const lastActivityMs = (a.heartbeatAt && a.heartbeatAt.toMillis) ? a.heartbeatAt.toMillis() : (a.invalidatedAt || a.startedAt);
+            const badgeClass = a._status==='Expired' ? 'review' : a._status==='Reset' ? 'draft' : 'edited';
+            const canReset = a._status!=='Reset';
+            return `
+            <tr>
+              <td>${esc(a.student.name)}</td>
+              <td>${esc(a.student.class||'')}</td>
+              <td>${esc(a.student.roll||'')}</td>
+              <td>${fmtDateTimeExact(a.startedAt)}</td>
+              <td>${fmtTime(a._elapsed)}</td>
+              <td>${fmtDateTimeExact(lastActivityMs)}</td>
+              <td>${answered} / ${totalQ}</td>
+              <td>${a.tabSwitches||0}</td>
+              <td><span class="badge ${badgeClass}">${a._status}</span></td>
+              <td><button class="btn ghost small" onclick="openProgressModal('${testId}','${a.id}')">View Progress</button></td>
+              <td>${canReset? `<button class="btn danger small" onclick="resetAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Reset</button>` : ''}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`}
+  `;
+}
+/** Shows exactly what a student has answered so far, without waiting for
+    (or requiring) a submission — reads only the attempt data already in
+    memory from the live Results listener, no extra Firestore call. */
+function openProgressModal(testId, attemptId){
+  const test = getDB().tests[testId];
+  const a = (getDB().unfinished[testId]||[]).find(x=>x.id===attemptId);
+  if(!test || !a) return;
+  const key = answerKeyCache[testId] || null; // only ever already-cached; never fetched just for this view
+  const answered = Object.keys(a.answers||{}).length;
+  const modal=document.createElement('div');
+  modal.className='modalbg';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:680px;">
+      <h3 style="margin-bottom:2px;">${esc(a.student.name)}</h3>
+      <p class="muted small" style="margin-bottom:16px;">${esc(a.student.class||'')} ${esc(a.student.roll||'')} · ${answered} / ${test.questions.length} answered so far · status: ${a.status==='invalidated'?'Reset':'In Progress / Expired'}</p>
+      ${test.questions.map((q,i)=>{
+        const given = (a.answers && a.answers[q.id]) || [];
+        const correctIds = q.correct || (key && key[q.id]) || null;
+        return `
+        <div class="qcard" style="margin-bottom:10px;">
+          <div class="qhead"><span class="qnum">Q${i+1}</span>${given.length? '' : '<span class="badge draft">Unattempted</span>'}</div>
+          <div class="qtext" style="font-size:14px;">${esc(q.text)}</div>
+          ${q.options.map(o=>{
+            const wasGiven = given.includes(o.id);
+            const isCorrect = correctIds ? correctIds.includes(o.id) : false;
+            let style='';
+            if(correctIds && isCorrect) style='color:var(--green); font-weight:600;';
+            else if(wasGiven && correctIds && !isCorrect) style='color:var(--red); text-decoration:line-through;';
+            return `<div class="opt" style="${style}"><span class="oletter" style="${wasGiven?'background:var(--ink);border-color:var(--ink);color:#fff;':''}">${wasGiven?'●':''}</span>${esc(o.text)}</div>`;
+          }).join('')}
+        </div>`;
+      }).join('')}
+      <div class="row" style="justify-content:flex-end; margin-top:6px;">
+        <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+/** "Reset" never deletes the attempt — it flips status to 'invalidated'
+    so the record (answers, timestamps, tab switches) is kept for your
+    reference, and separately releases the mobile-number claim so a
+    genuinely new attempt can be created. That new attempt goes through
+    the exact same startAttempt()/firestore.rules path as any first
+    attempt, so the same time-allowance and duration limits apply —
+    nothing about attempt-limit enforcement is weakened by resetting. */
+async function resetAttempt(testId, attemptId, mobileKey){
+  if(!confirm('Reset this attempt? The old record is kept (not deleted) for your reference, and the student will be able to start the test again from scratch with a fresh full time allowance.')) return;
+  try{
+    await dbf.collection('tests').doc(testId).collection('attempts').doc(attemptId)
+      .update({status:'invalidated', invalidatedAt: Date.now()});
+    if(mobileKey) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(mobileKey).delete().catch(()=>{});
+    toast('Attempt reset — the old record is kept, and they can attempt again');
+  }catch(err){ toast('Could not reset: '+err.message); }
 }
 function openResponseModal(testId, resultId){
   const test = getDB().tests[testId];
@@ -1385,7 +1605,7 @@ async function removeResultEntry(testId, resultId, mobile){
   }catch(err){ toast('Could not remove: '+err.message); }
 }
 function promptReleaseMobile(testId){
-  const mobile = prompt('Enter the mobile number to release. This clears their lock on this test (and deletes any unfinished attempt under that number) so they can start again.');
+  const mobile = prompt('Enter the mobile number to release. This clears their lock on this test (and marks any unfinished attempt under that number as reset, without deleting its record) so they can start again.');
   if(mobile===null) return;
   releaseMobile(testId, mobile);
 }
@@ -1394,13 +1614,14 @@ async function releaseMobile(testId, mobile){
   if(key.length<6){ toast('Enter a valid mobile number'); return; }
   try{
     await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(key).delete();
-    // Also clear any stuck, never-submitted attempt under that number —
-    // otherwise it would keep counting toward "already attempted" checks
-    // a teacher might do by eye, even though the claim itself is gone.
+    // Also invalidate (never delete) any stuck, never-submitted attempt
+    // under that number — otherwise it would keep counting toward
+    // "already attempted" checks a teacher might do by eye, even though
+    // the claim itself is gone. The old record stays for your reference.
     const snap = await dbf.collection('tests').doc(testId).collection('attempts').where('mobileKey','==',key).get();
-    const deletions=[];
-    snap.forEach(doc=>{ if(doc.data().status!=='submitted') deletions.push(doc.ref.delete()); });
-    await Promise.all(deletions);
+    const updates=[];
+    snap.forEach(doc=>{ if(doc.data().status==='in-progress') updates.push(doc.ref.update({status:'invalidated', invalidatedAt:Date.now()})); });
+    await Promise.all(updates);
     toast('Mobile number released — they can attempt again');
   }catch(err){ toast('Could not release: '+err.message); }
 }
@@ -1653,7 +1874,7 @@ function drawAttempt(){
 function submitDetails(){
   const mobile = document.getElementById('s_mobile').value.trim();
   if(sanitizeMobile(mobile).length < 6){
-    alert('Please enter a valid mobile number — it\'s used to make sure the same student can\'t attempt this test twice.');
+    alert('Please enter a valid mobile number.');
     return;
   }
   attemptState.student = {
@@ -1695,16 +1916,20 @@ async function startAttempt(){
 
   el.innerHTML = `<div class="fullload"><span class="spinner"></span>Starting…</div>`;
   const mobileKey = sanitizeMobile(attemptState.student.mobile);
-  // A "claim" doc at a deterministic ID (the mobile number itself) is how
-  // this works without student accounts: firestore.rules only allows
-  // *creating* this doc, never overwriting it, so a second attempt from
-  // the same number fails outright rather than silently succeeding.
+  // A "claim" doc at a deterministic ID is how this works without student
+  // accounts: firestore.rules only allows *creating* this doc, never
+  // overwriting it, so a second attempt fails outright rather than
+  // silently succeeding — no query or Cloud Function needed to check
+  // "has this already been used".
   if(mobileKey){
     try{
       await dbf.collection('tests').doc(t.id).collection('mobileClaims').doc(mobileKey)
         .set({ student: attemptState.student, claimedAt: now });
     }catch(err){
-      el.innerHTML = `<div class="empty"><h3>Already attempted</h3><p class="small muted">An attempt has already been made on this test using this mobile number. If this is a mistake, ask your teacher.</p></div>`;
+      // No extra read here on purpose — the failed write above already
+      // told us everything we need (it exists), and a lookup just to
+      // fetch a name would cost another Firestore read for no real gain.
+      el.innerHTML = `<div class="empty"><h3>Already attempted</h3><p class="small muted">This student has already attempted this test. If this is a mistake, ask your teacher.</p></div>`;
       return;
     }
   }

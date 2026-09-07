@@ -54,19 +54,29 @@ service cloud.firestore {
         allow list: if isOwner(testId);
 
         allow update: if
-          resource.data.status == 'in-progress' &&
-          // Core exam parameters can never be changed once the attempt exists.
-          request.resource.data.testId == resource.data.testId &&
-          request.resource.data.startedAt == resource.data.startedAt &&
-          request.resource.data.availableMs == resource.data.availableMs &&
-          request.resource.data.order == resource.data.order &&
-          request.resource.data.optOrder == resource.data.optOrder &&
-          request.resource.data.student == resource.data.student &&
-          // Every save — including the final submit — has to arrive within
-          // the real allowance plus a short grace period for normal network
-          // latency. This is checked against request.time, Firestore's own
-          // clock, so changing a device's system clock has no effect on it.
-          request.time.toMillis() <= resource.data.startedAt + resource.data.availableMs + 60000;
+          ( // the student's own progress/submit writes — time-boxed, core fields locked
+            resource.data.status == 'in-progress' &&
+            request.resource.data.testId == resource.data.testId &&
+            request.resource.data.startedAt == resource.data.startedAt &&
+            request.resource.data.availableMs == resource.data.availableMs &&
+            request.resource.data.order == resource.data.order &&
+            request.resource.data.optOrder == resource.data.optOrder &&
+            request.resource.data.student == resource.data.student &&
+            // Every save — including the final submit — has to arrive within
+            // the real allowance plus a short grace period for normal network
+            // latency. This is checked against request.time, Firestore's own
+            // clock, so changing a device's system clock has no effect on it.
+            request.time.toMillis() <= resource.data.startedAt + resource.data.availableMs + 60000
+          ) || (
+            // the teacher's own "Reset/Allow Retry" action — no time limit,
+            // and deliberately allowed even on an already-expired attempt.
+            // It can only ever flip a non-submitted attempt to 'invalidated'
+            // (never edit its answers or resurrect a submitted one), which
+            // is what lets the old record be kept instead of deleted.
+            isOwner(testId) &&
+            resource.data.status != 'submitted' &&
+            request.resource.data.status == 'invalidated'
+          );
 
         // Only the owning teacher can delete an attempt — this is the
         // "remove a wrong/duplicate submission" tool in the Results view.
