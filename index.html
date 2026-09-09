@@ -271,15 +271,13 @@ function sanitizeMobile(m){ return (m||'').replace(/[^0-9]/g,''); }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -311,13 +309,16 @@ function saveTest(test){
   const hideResults = isPublished && test.config.resultVisibility === 'hidden';
   const publicQuestions = test.questions.map(q=>{
     if(!hideResults) return q;
-    const {correct, ...rest} = q; return rest;
+    const {correct, numericMin, numericMax, ...rest} = q; return rest;
   });
   const publicDoc = {...test, ownerId: currentUser.uid, questions: publicQuestions};
   dbf.collection('tests').doc(test.id).set(publicDoc)
     .catch(err=>toast('Could not save to the server: '+err.message));
   if(hideResults){
-    const answerKey={}; test.questions.forEach(q=>{ answerKey[q.id]=q.correct||[]; });
+    const answerKey={};
+    test.questions.forEach(q=>{
+      answerKey[q.id] = { correct: q.correct||[], numericMin: q.numericMin!=null? q.numericMin:null, numericMax: q.numericMax!=null? q.numericMax:null };
+    });
     dbf.collection('tests').doc(test.id).collection('private').doc('answerKey').set(answerKey).catch(()=>{});
   }
 }
@@ -333,7 +334,18 @@ async function loadTestForEdit(testId){
       const keyDoc = await dbf.collection('tests').doc(testId).collection('private').doc('answerKey').get();
       test = JSON.parse(JSON.stringify(test));
       const key = keyDoc.exists? keyDoc.data() : {};
-      test.questions.forEach(q=>{ q.correct = key[q.id] || []; });
+      test.questions.forEach(q=>{
+        const entry = key[q.id];
+        if(Array.isArray(entry)){ // legacy key format, from before numerical questions existed
+          q.correct = entry;
+          if(q.numericMin===undefined) q.numericMin=null;
+          if(q.numericMax===undefined) q.numericMax=null;
+        } else {
+          q.correct = (entry && entry.correct) || [];
+          q.numericMin = (entry && entry.numericMin!=null) ? entry.numericMin : (q.numericMin!=null? q.numericMin:null);
+          q.numericMax = (entry && entry.numericMax!=null) ? entry.numericMax : (q.numericMax!=null? q.numericMax:null);
+        }
+      });
     }catch(e){ toast('Could not load answer key: '+e.message); }
   }
   return test;
@@ -365,17 +377,104 @@ async function ensureAnswerKey(testId){
     `correct` already) or a separately-fetched answer key (for "hidden"
     tests, where the student's browser never had the key to begin with —
     this is where that deferred grading actually happens). */
+/** Works for every question type, and for both places grading happens:
+    directly on a question that still carries its own answer key (q.correct
+    / q.numericMin/Max — the immediate/scoreOnly path), or against a
+    separately-fetched private key entry (the "hidden"-visibility path).
+    keyEntry may be the older flat-array format (legacy hidden-mode tests
+    published before numerical/multi-select support existed) or the newer
+    {correct, numericMin, numericMax} object — both are handled. */
+function isAnswerCorrect(q, given, keyEntry){
+  if(!given || given.length===0) return null; // unattempted
+  if(q.type==='numerical'){
+    let min = q.numericMin, max = q.numericMax;
+    if(min==null && keyEntry && typeof keyEntry==='object' && !Array.isArray(keyEntry)){
+      min = keyEntry.numericMin; max = keyEntry.numericMax;
+    }
+    const val = parseFloat(given[0]);
+    if(isNaN(val) || min==null || max==null) return false;
+    return val>=min && val<=max;
+  }
+  let correctIds = q.correct;
+  if(correctIds===undefined){
+    if(Array.isArray(keyEntry)) correctIds = keyEntry; // legacy hidden-mode key format
+    else if(keyEntry && typeof keyEntry==='object') correctIds = keyEntry.correct || [];
+    else correctIds = [];
+  }
+  const correct = new Set(correctIds||[]);
+  const givenSet = new Set(given);
+  return correct.size===givenSet.size && [...correct].every(c=>givenSet.has(c));
+}
+/** Resolves the correct option ids for display, whether they live
+    directly on the question (immediate/scoreOnly tests, or the teacher's
+    own always-unstripped copy) or only in a separately-fetched key entry
+    (hidden-mode tests, viewed by the teacher). Returns null when truly
+    unknown — e.g. an in-progress attempt on a hidden test the teacher
+    hasn't opened Results for yet, so nothing has been fetched. */
+function resolveCorrectIds(q, keyEntry){
+  if(q.correct!==undefined) return q.correct||[];
+  if(Array.isArray(keyEntry)) return keyEntry; // legacy hidden-mode key format
+  if(keyEntry && typeof keyEntry==='object') return keyEntry.correct||[];
+  return null;
+}
+function resolveNumericRange(q, keyEntry){
+  if(q.numericMin!=null) return {min:q.numericMin, max:q.numericMax};
+  if(keyEntry && typeof keyEntry==='object' && !Array.isArray(keyEntry) && keyEntry.numericMin!=null){
+    return {min:keyEntry.numericMin, max:keyEntry.numericMax};
+  }
+  return {min:null, max:null};
+}
+/** One question's review card — question text, image, and either the
+    option-by-option correct/incorrect breakdown or the numerical answer
+    vs. accepted range. Shared by the teacher's response modal, the
+    student's own post-submission review, and the unfinished-attempt
+    progress viewer, so all three stay visually and behaviorally
+    consistent instead of drifting apart as separate copies. */
+function renderQuestionReviewCard(q, index, given, wasCorrect, keyEntry){
+  given = given || [];
+  const statusBadge = wasCorrect===true? '<span class="badge verified">Correct</span>'
+    : wasCorrect===false? '<span class="badge review">Incorrect</span>'
+    : (given.length? '' : '<span class="badge draft">Unattempted</span>');
+  const imageHtml = q.image? `<img src="${q.image}" style="max-width:100%; border-radius:4px; margin:8px 0;">` : '';
+  let body;
+  if(q.type==='numerical'){
+    const range = resolveNumericRange(q, keyEntry);
+    const rangeKnown = range.min!=null && range.max!=null;
+    const rangeText = rangeKnown ? (range.min===range.max? `Correct answer: ${range.min}` : `Accepted range: ${range.min} to ${range.max}`) : 'Correct answer not available';
+    body = `<div class="small" style="margin-top:6px;">
+      <div>Answer given: <strong>${given.length? esc(given[0]) : '—'}</strong></div>
+      <div class="muted">${esc(rangeText)}</div>
+    </div>`;
+  } else {
+    const correctIds = resolveCorrectIds(q, keyEntry);
+    body = (q.options||[]).map(o=>{
+      const wasGiven = given.includes(o.id);
+      const isCorrect = correctIds ? correctIds.includes(o.id) : false;
+      let style='';
+      if(correctIds && isCorrect) style='color:var(--green); font-weight:600;';
+      else if(wasGiven && correctIds && !isCorrect) style='color:var(--red); text-decoration:line-through;';
+      const markBg = (correctIds && isCorrect) ? 'background:var(--green);border-color:var(--green);color:#fff;'
+        : (wasGiven && correctIds) ? 'background:var(--red);border-color:var(--red);color:#fff;'
+        : wasGiven ? 'background:var(--ink);border-color:var(--ink);color:#fff;' : '';
+      return `<div class="opt" style="${style}"><span class="oletter" style="${markBg}">${wasGiven?'●':''}</span>${esc(o.text)}</div>`;
+    }).join('');
+  }
+  return `
+    <div class="qcard" style="margin-bottom:10px;">
+      <div class="qhead"><span class="qnum">Q${index+1} · ${typeLabelShort(q.type)}</span>${statusBadge}</div>
+      <div class="qtext" style="font-size:14px;">${esc(q.text)}</div>
+      ${imageHtml}
+      ${body}
+    </div>`;
+}
 function gradeAttempt(test, key, a){
   let score=0, maxScore=0, correctCount=0, incorrectCount=0, unattempted=0, negativeDeduction=0;
   const perQuestionCorrect={};
   test.questions.forEach(q=>{
     maxScore += q.marks;
     const given = a.answers[q.id] || [];
-    if(given.length===0){ unattempted++; return; }
-    const correctIds = q.correct || key[q.id] || [];
-    const correct = new Set(correctIds);
-    const givenSet = new Set(given);
-    const isCorrect = correct.size===givenSet.size && [...correct].every(c=>givenSet.has(c));
+    const isCorrect = isAnswerCorrect(q, given, key[q.id]);
+    if(isCorrect===null){ unattempted++; return; }
     perQuestionCorrect[q.id]=isCorrect;
     if(isCorrect){ score+=q.marks; correctCount++; }
     else{
@@ -431,7 +530,9 @@ function addToBank(q){
   if(q.bankId){ toast('Already saved to your bank'); return; } // guards against accidental duplicate saves
   const item = {
     ownerId: currentUser.uid,
-    text: q.text, options: q.options, correct: q.correct,
+    text: q.text, type: q.type||'single', options: q.options, correct: q.correct,
+    numericMin: q.numericMin!=null? q.numericMin : null, numericMax: q.numericMax!=null? q.numericMax : null,
+    image: q.image || null,
     marks: q.marks, negativeMarks: q.negativeMarks, createdAt: Date.now()
   };
   dbf.collection('questionBank').add(item)
@@ -453,20 +554,30 @@ function deleteBankItem(id){
 
 /* ---------------- question paper parser ---------------- */
 // Best-effort text parser: finds "1. question", options "A) text", "Answer: B"
+// — plus, for a question with no lettered options at all, a numeric
+// answer line like "Answer: 34-37" (a range) or "Answer: 5" (an exact
+// value) is read as a numerical-input question instead.
 function parseQuestionPaper(raw){
   const lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
   const qRe = /^(?:Q\.?\s*)?(\d{1,3})[\.\)\:]\s+(.*)/i;
   const oRe = /^\(?([A-Da-d])\)?[\.\)\:]\s+(.*)/;
   const aRe = /^(?:Ans(?:wer)?|Correct\s*Answer)\s*[:\-]?\s*\(?([A-Da-d])\)?/i;
-  const tfRe = /^(True|False)\s*\/\s*(True|False)/i;
+  const numRangeRe = /^(?:Ans(?:wer)?|Correct\s*Answer)\s*[:\-]?\s*(-?\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(-?\d+(?:\.\d+)?)\s*$/i;
+  const numExactRe = /^(?:Ans(?:wer)?|Correct\s*Answer)\s*[:\-]?\s*(-?\d+(?:\.\d+)?)\s*$/i;
   let questions=[]; let cur=null;
   for(const line of lines){
     const qm = line.match(qRe);
     const om = line.match(oRe);
     const am = line.match(aRe);
-    if(qm && (!cur || cur.options.length>0 || cur.text==='')){
+    // Numeric answer lines only make sense for a question that hasn't
+    // collected any lettered options — otherwise it's clearly an MCQ.
+    const canBeNumeric = cur && cur.options.length===0 && cur.numericMin==null;
+    const nrm = canBeNumeric ? line.match(numRangeRe) : null;
+    const nem = (canBeNumeric && !nrm) ? line.match(numExactRe) : null;
+
+    if(qm && (!cur || cur.options.length>0 || cur.numericMin!=null || cur.text==='')){
       if(cur) questions.push(cur);
-      cur = {text: qm[2], options: [], answerLetter:null};
+      cur = {text: qm[2], options: [], answerLetter:null, numericMin:null, numericMax:null};
       continue;
     }
     if(om && cur){
@@ -477,29 +588,48 @@ function parseQuestionPaper(raw){
       cur.answerLetter = am[1].toUpperCase();
       continue;
     }
-    if(cur && cur.options.length===0){
+    if(nrm && cur){
+      cur.numericMin = parseFloat(nrm[1]); cur.numericMax = parseFloat(nrm[2]);
+      continue;
+    }
+    if(nem && cur){
+      const v = parseFloat(nem[1]); cur.numericMin = v; cur.numericMax = v;
+      continue;
+    }
+    if(cur && cur.options.length===0 && cur.numericMin==null){
       cur.text += ' ' + line; // wrap multi-line question text
     }
   }
   if(cur) questions.push(cur);
 
   return questions.map(q=>{
+    if(q.numericMin!=null){
+      const lowConfidence = q.numericMax==null;
+      return {
+        id: uid('q'), text: q.text.trim(), type:'numerical',
+        options: [], correct: [],
+        numericMin: q.numericMin, numericMax: q.numericMax!=null? q.numericMax : q.numericMin,
+        image: null, marks: 1, negativeMarks: 0, status:'review', lowConfidence
+      };
+    }
     const opts = q.options.map((t,i)=>({id: 'o'+i, text:t}));
     let correct = [];
     if(q.answerLetter){
       const idx = q.answerLetter.charCodeAt(0)-65;
       if(opts[idx]) correct=[opts[idx].id];
     }
+    const isTrueFalse = opts.length===2 && opts.every(o=>/^(true|false)$/i.test(o.text.trim()));
     const lowConfidence = opts.length<2 || correct.length===0;
     return {
       id: uid('q'),
       text: q.text.trim(),
-      type: opts.length? 'single':'single',
+      type: isTrueFalse? 'truefalse' : 'single',
       options: opts.length? opts : [{id:'o0',text:'Option A'},{id:'o1',text:'Option B'}],
       correct: correct.length? correct : [],
+      numericMin: null, numericMax: null, image: null,
       marks: 1,
       negativeMarks: 0,
-      status: lowConfidence ? 'review' : 'review' // teacher must verify everything, low-confidence flagged separately
+      status: 'review' // teacher must verify everything, low-confidence flagged separately
       , lowConfidence
     };
   });
@@ -652,7 +782,17 @@ function renderAuthGate(){
         <button class="btn amber" onclick="doLogin()">Sign in</button>
         <button class="btn secondary" onclick="doSignup()">Create account</button>
       </div>
+      <div style="margin-top:14px;">
+        <a href="#" class="small muted" style="text-decoration:underline;" onclick="event.preventDefault(); forgotPassword();">Forgot password?</a>
+      </div>
     </div>`;
+}
+function forgotPassword(){
+  const email = document.getElementById('authEmail').value.trim();
+  if(!email){ authError('Enter your email above, then click "Forgot password?" again.'); return; }
+  auth.sendPasswordResetEmail(email)
+    .then(()=>{ document.getElementById('authMsg').innerHTML = `<div class="small muted" style="margin-bottom:12px;">Password reset email sent to ${esc(email)} — check your inbox.</div>`; })
+    .catch(err=>authError(err.message));
 }
 function authError(msg){ document.getElementById('authMsg').innerHTML = `<div class="authmsg">${esc(msg)}</div>`; }
 function doLogin(){
@@ -758,7 +898,7 @@ function viewBank(){
         <div class="test-row" style="align-items:flex-start;">
           <div class="ti" style="max-width:75%;">
             <h4 style="font-size:14.5px; font-weight:600;">${esc(item.text.slice(0,140))}${item.text.length>140?'…':''}</h4>
-            <div class="meta">${item.options.length} options · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}</div>
+            <div class="meta">${typeLabelShort(item.type||'single')} · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}</div>
           </div>
           <div class="ta"><button class="btn danger small" onclick="deleteBankItem('${item.id}')">Delete</button></div>
         </div>`).join('')}
@@ -790,8 +930,9 @@ function afterWizardRender(){ if(wizardStep==='upload') setupDragDrop(); }
 function persistDraft(){ saveTest(wizardDraft); }
 
 /* ---- Step 1: Upload ---- */
-const AI_CONVERSION_PROMPT = `I have a question paper that needs converting into a specific plain-text format so I can upload it to a quiz tool. Please reformat the question paper I paste below (or attach) into exactly this layout:
+const AI_CONVERSION_PROMPT = `I have a question paper that needs converting into a specific plain-text format so I can upload it to a quiz tool. Please reformat the question paper I paste below (or attach) into exactly this layout, question by question.
 
+For a multiple-choice or true/false question, use lettered options and a letter answer:
 1. <question text>
 A) <option A>
 B) <option B>
@@ -799,14 +940,24 @@ C) <option C>
 D) <option D>
 Answer: <correct option letter>
 
+For a true/false question specifically, use exactly two options worded as True and False:
 2. <question text>
-A) <option A>
-...
+A) True
+B) False
+Answer: <A or B>
+
+For a question that expects a typed numeric answer (not multiple choice), skip the lettered options entirely and give the accepted answer as a number or a range right after the question:
+3. <question text>
+Answer: <exact number>
+
+4. <question text>
+Answer: <minimum number>-<maximum number>
 
 Rules:
 - Number every question sequentially starting at 1, followed by a period and a space (e.g. "1. ").
 - Give each option a single capital letter followed by a closing parenthesis and a space (e.g. "A) ").
-- Include an "Answer: X" line right after each question's options, where X is the correct option's letter. If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
+- Include an "Answer:" line right after each question (after its options, if it has any). If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
+- Only use the numeric "Answer: min-max" or "Answer: number" format for questions that genuinely expect a typed numeric answer, not multiple choice — never mix lettered options with a numeric answer line on the same question.
 - Output ONLY the reformatted questions in the format above — no headers, page numbers, explanations, or commentary.
 - Keep the original question text and options exactly as written; only reformat the layout and numbering.
 
@@ -860,9 +1011,11 @@ Answer: B
 
 2. ..."></textarea>
 
-      <div class="row" style="margin-top:16px; justify-content:space-between;">
-        <div class="row">
+      <div class="row" style="margin-top:16px; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <div class="row" style="flex-wrap:wrap; gap:8px;">
           <button class="btn secondary" onclick="addBlankQuestion()">+ Add a question manually instead</button>
+          <button class="btn ghost small" onclick="addBlankTrueFalse()">+ True/False</button>
+          <button class="btn ghost small" onclick="addBlankNumerical()">+ Numerical</button>
           <button class="btn secondary" onclick="openBankPicker()">+ Insert from Question Bank</button>
         </div>
         <button class="btn amber" id="extractBtn" onclick="runExtraction()">Extract Questions →</button>
@@ -978,7 +1131,25 @@ function addBlankQuestion(){
   wizardDraft.questions.push({
     id: uid('q'), text:'New question text', type:'single',
     options:[{id:'o0',text:'Option A'},{id:'o1',text:'Option B'},{id:'o2',text:'Option C'},{id:'o3',text:'Option D'}],
-    correct:[], marks:1, negativeMarks:0, status:'review', lowConfidence:true
+    correct:[], numericMin:null, numericMax:null, image:null,
+    marks:1, negativeMarks:0, status:'review', lowConfidence:true
+  });
+  persistDraft(); wizardStep='verify'; render();
+}
+function addBlankTrueFalse(){
+  wizardDraft.questions.push({
+    id: uid('q'), text:'New true/false question', type:'truefalse',
+    options:[{id:'o0',text:'True'},{id:'o1',text:'False'}],
+    correct:[], numericMin:null, numericMax:null, image:null,
+    marks:1, negativeMarks:0, status:'review', lowConfidence:true
+  });
+  persistDraft(); wizardStep='verify'; render();
+}
+function addBlankNumerical(){
+  wizardDraft.questions.push({
+    id: uid('q'), text:'New numerical question', type:'numerical',
+    options:[], correct:[], numericMin:0, numericMax:0, image:null,
+    marks:1, negativeMarks:0, status:'review', lowConfidence:true
   });
   persistDraft(); wizardStep='verify'; render();
 }
@@ -995,7 +1166,7 @@ function openBankPicker(){
           ${bank.map(item=>`
             <div class="editrow" style="align-items:flex-start;">
               <input type="checkbox" id="bk_${item.id}" style="width:16px;height:16px;margin-top:3px;">
-              <label for="bk_${item.id}" style="flex:1; cursor:pointer; font-size:13.5px;">${esc(item.text.slice(0,120))}${item.text.length>120?'…':''} <span class="muted small">(${item.options.length} options, ${item.marks} mark${item.marks===1?'':'s'})</span></label>
+              <label for="bk_${item.id}" style="flex:1; cursor:pointer; font-size:13.5px;">${esc(item.text.slice(0,120))}${item.text.length>120?'…':''} <span class="muted small">(${typeLabelShort(item.type||'single')}, ${item.marks} mark${item.marks===1?'':'s'})</span></label>
             </div>`).join('')}
         </div>
         <div class="row" style="justify-content:flex-end; margin-top:14px;">
@@ -1010,8 +1181,11 @@ function insertFromBank(){
   const checked = bank.filter(item=>{ const el=document.getElementById('bk_'+item.id); return el && el.checked; });
   checked.forEach(item=>{
     wizardDraft.questions.push({
-      id: uid('q'), text:item.text, type:'single',
-      options: item.options.map(o=>({...o})), correct:[...item.correct],
+      id: uid('q'), text:item.text, type: item.type||'single',
+      options: (item.options||[]).map(o=>({...o})), correct:[...(item.correct||[])],
+      numericMin: item.numericMin!=null? item.numericMin : null,
+      numericMax: item.numericMax!=null? item.numericMax : null,
+      image: item.image || null,
       marks:item.marks, negativeMarks:item.negativeMarks||0,
       status:'verified', lowConfidence:false, bankId:item.id
     });
@@ -1048,16 +1222,24 @@ function verifyAllAndContinue(){
   }
   wizardStep='configure'; persistDraft(); render();
 }
+function typeLabelShort(type){
+  return type==='multiple' ? 'Multiple Choice' : type==='truefalse' ? 'True/False' : type==='numerical' ? 'Numerical' : 'Single Choice';
+}
 function questionCard(q,i){
   const badgeClass = q.status==='verified'?'verified':(q.status==='edited'?'edited':'review');
+  const imageHtml = q.image? `<img src="${q.image}" style="max-width:220px; max-height:160px; border-radius:4px; margin:8px 0; display:block;">` : '';
+  const bodyHtml = q.type==='numerical'
+    ? `<div class="small" style="margin-top:6px; padding:8px 10px; background:var(--paper); border-radius:4px;">Accepted answer: <strong>${q.numericMin===q.numericMax? esc(String(q.numericMin)) : esc(q.numericMin+' to '+q.numericMax)}</strong></div>`
+    : q.options.map((o,oi)=>`<div class="opt ${q.correct.includes(o.id)?'correct':''}"><span class="oletter">${letter(oi)}</span>${esc(o.text)}</div>`).join('');
   return `
   <div class="qcard">
     <div class="qhead">
-      <span class="qnum">QUESTION ${i+1}${q.lowConfidence? ' · low extraction confidence':''}</span>
+      <span class="qnum">QUESTION ${i+1} · ${typeLabelShort(q.type)}${q.lowConfidence? ' · low extraction confidence':''}</span>
       <span class="badge ${badgeClass}">${q.status==='verified'?'✓ Verified':(q.status==='edited'?'✎ Edited':'⚠ Needs Review')}</span>
     </div>
     <div class="qtext">${esc(q.text)}</div>
-    ${q.options.map(o=>`<div class="opt ${q.correct.includes(o.id)?'correct':''}"><span class="oletter">${o.id===q.options[q.options.indexOf(o)].id? letter(q.options.indexOf(o)):''}</span>${esc(o.text)}</div>`).join('')}
+    ${imageHtml}
+    ${bodyHtml}
     <div class="row small muted" style="margin-top:8px;">Marks: ${q.marks}${q.negativeMarks? ' · Negative: -'+q.negativeMarks:''}</div>
     <div class="qactions">
       <button class="btn secondary small" onclick="openEditModal('${q.id}')">Edit</button>
@@ -1082,26 +1264,129 @@ function deleteQ(id){
   if(!confirm('Delete this question?')) return;
   wizardDraft.questions = wizardDraft.questions.filter(q=>q.id!==id); persistDraft(); render();
 }
+/** Shrinks and compresses an uploaded image to a JPEG data URI before it's
+    stored — since images live embedded in the test document (no separate
+    file storage in this build), keeping them small matters for Firestore's
+    per-document size limit and for keeping reads/writes cheap. */
+function compressImageToDataURI(file, maxWidth, quality){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const scale = Math.min(1, maxWidth/img.width);
+        const w = Math.max(1, Math.round(img.width*scale)), h = Math.max(1, Math.round(img.height*scale));
+        const canvas = document.createElement('canvas');
+        canvas.width=w; canvas.height=h;
+        canvas.getContext('2d').drawImage(img,0,0,w,h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function handleModalImageFile(file){
+  if(!file) return;
+  try{
+    window._modalImage = await compressImageToDataURI(file, 700, 0.6);
+    renderModalImagePreview();
+  }catch(e){ toast('Could not read that image'); }
+}
+function removeModalImage(){ window._modalImage=null; renderModalImagePreview(); }
+function renderModalImagePreview(){
+  const el = document.getElementById('mq_imagePreview');
+  if(!el) return;
+  el.innerHTML = window._modalImage
+    ? `<img src="${window._modalImage}" style="max-width:200px; max-height:140px; border-radius:4px; display:block; margin-bottom:6px;"><button class="btn ghost small" onclick="removeModalImage()">Remove image</button>`
+    : `<p class="small muted" style="margin:0 0 6px;">No image attached.</p>`;
+}
+function modalMarkStyle(){
+  return 'width:20px;height:20px;border:1.5px solid var(--border);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;cursor:pointer;';
+}
+function renderModalTypeBody(type){
+  if(type==='numerical'){
+    return `
+      <label class="field">Accepted answer range</label>
+      <div class="row">
+        <div class="grow"><label class="field small">Minimum</label><input type="number" id="mq_nummin" value="${window._modalNumMin}" step="any"></div>
+        <div class="grow"><label class="field small">Maximum</label><input type="number" id="mq_nummax" value="${window._modalNumMax}" step="any"></div>
+      </div>
+      <p class="small muted" style="margin-top:6px;">A student's typed answer counts as correct if it falls anywhere between these two values, inclusive. Use the same value in both boxes if only one exact number is correct.</p>`;
+  }
+  const locked = type==='truefalse';
+  const opts = window._modalOptions || [];
+  return `
+    <label class="field">${type==='multiple'? 'Options — check every correct answer' : 'Options — select the correct one'}</label>
+    <div id="mq_opts">
+      ${opts.map((o,i)=>{
+        const isCorrect = window._modalCorrect.has(o.id);
+        return `
+        <div class="editrow">
+          <span class="radiomark" data-idx="${i}" onclick="setModalCorrect('${o.id}')" id="mk_${o.id}" style="${modalMarkStyle()}${isCorrect?'background:var(--green);border-color:var(--green);color:#fff;':''}">${isCorrect?'✓':letter(i)}</span>
+          <input type="text" id="mo_${o.id}" value="${esc(o.text)}" ${locked?'readonly':''}>
+          ${locked? '' : `<button class="btn ghost small" onclick="removeModalOpt('${o.id}')">✕</button>`}
+        </div>`;
+      }).join('')}
+    </div>
+    ${locked? '' : `<button class="btn secondary small" onclick="addModalOpt()">+ Add option</button>`}
+  `;
+}
+function onModalTypeChange(newType){
+  // Capture whatever's currently typed before the DOM underneath it changes.
+  if(window._modalType==='numerical'){
+    window._modalNumMin = parseFloat(document.getElementById('mq_nummin').value) || 0;
+    window._modalNumMax = parseFloat(document.getElementById('mq_nummax').value) || 0;
+  } else {
+    const rows = [...document.querySelectorAll('#mq_opts .editrow')];
+    if(rows.length){
+      window._modalOptions = rows.map(r=>{
+        const input = r.querySelector('input[type=text]');
+        return {id: input.id.replace('mo_',''), text: input.value};
+      });
+    }
+  }
+  window._modalType = newType;
+  if(newType==='truefalse'){
+    window._modalOptions = [{id:'o0',text:'True'},{id:'o1',text:'False'}];
+    window._modalCorrect = new Set();
+  } else if(newType!=='numerical' && (!window._modalOptions || window._modalOptions.length===0)){
+    window._modalOptions = [{id:'o0',text:'Option A'},{id:'o1',text:'Option B'}];
+  }
+  document.getElementById('mq_typebody').innerHTML = renderModalTypeBody(newType);
+}
 function openEditModal(id){
   const q=findQ(id);
+  window._modalType = q.type || 'single';
+  window._modalOptions = (q.options||[]).map(o=>({...o}));
+  window._modalCorrect = new Set(q.correct||[]);
+  window._modalNumMin = q.numericMin!=null? q.numericMin : 0;
+  window._modalNumMax = q.numericMax!=null? q.numericMax : (q.numericMin!=null? q.numericMin : 0);
+  window._modalImage = q.image || null;
+
   const modal=document.createElement('div');
   modal.className='modalbg';
   modal.innerHTML=`
     <div class="modal">
       <h3 style="margin-bottom:14px;">Edit question</h3>
+      <label class="field">Question type</label>
+      <select id="mq_type" onchange="onModalTypeChange(this.value)">
+        <option value="single" ${window._modalType==='single'?'selected':''}>Single Choice</option>
+        <option value="multiple" ${window._modalType==='multiple'?'selected':''}>Multiple Choice (select all that apply)</option>
+        <option value="truefalse" ${window._modalType==='truefalse'?'selected':''}>True / False</option>
+        <option value="numerical" ${window._modalType==='numerical'?'selected':''}>Numerical (range)</option>
+      </select>
+      <div class="hr"></div>
       <label class="field">Question text</label>
       <textarea id="mq_text" rows="3" style="font-family:Inter,sans-serif;">${esc(q.text)}</textarea>
       <div class="hr"></div>
-      <label class="field">Options (select the correct one)</label>
-      <div id="mq_opts">
-        ${q.options.map((o,i)=>`
-          <div class="editrow">
-            <span class="radiomark" onclick="setModalCorrect('${o.id}')" id="mk_${o.id}" style="width:20px;height:20px;border:1.5px solid var(--border);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;${q.correct.includes(o.id)?'background:var(--green);border-color:var(--green);color:#fff;':''}">${letter(i)}</span>
-            <input type="text" id="mo_${o.id}" value="${esc(o.text)}">
-            <button class="btn ghost small" onclick="removeModalOpt('${o.id}')">✕</button>
-          </div>`).join('')}
-      </div>
-      <button class="btn secondary small" onclick="addModalOpt()">+ Add option</button>
+      <label class="field">Image (optional)</label>
+      <div id="mq_imagePreview"></div>
+      <input type="file" id="mq_imageFile" accept="image/*" onchange="handleModalImageFile(this.files[0])">
+      <div class="hr"></div>
+      <div id="mq_typebody"></div>
       <div class="hr"></div>
       <div class="fieldgrid">
         <div><label class="field">Marks</label><input type="number" id="mq_marks" value="${q.marks}" min="0" step="0.5"></div>
@@ -1113,19 +1398,30 @@ function openEditModal(id){
       </div>
     </div>`;
   document.body.appendChild(modal);
-  window._modalCorrect = new Set(q.correct);
+  document.getElementById('mq_typebody').innerHTML = renderModalTypeBody(window._modalType);
+  renderModalImagePreview();
 }
 function setModalCorrect(oid){
-  // single-answer toggle (radio behaviour)
-  window._modalCorrect = new Set([oid]);
-  document.querySelectorAll('#mq_opts .radiomark').forEach(el=>{ el.style.background=''; el.style.borderColor='var(--border)'; el.style.color=''; });
-  const el=document.getElementById('mk_'+oid); el.style.background='var(--green)'; el.style.borderColor='var(--green)'; el.style.color='#fff';
+  if(window._modalType==='multiple'){
+    window._modalCorrect.has(oid) ? window._modalCorrect.delete(oid) : window._modalCorrect.add(oid);
+  } else {
+    window._modalCorrect = new Set([oid]);
+  }
+  document.querySelectorAll('#mq_opts .radiomark').forEach(el=>{
+    const thisId = el.id.replace('mk_','');
+    const isCorrect = window._modalCorrect.has(thisId);
+    el.style.background = isCorrect? 'var(--green)':'';
+    el.style.borderColor = isCorrect? 'var(--green)':'var(--border)';
+    el.style.color = isCorrect? '#fff':'';
+    el.textContent = isCorrect? '✓' : letter(parseInt(el.dataset.idx,10));
+  });
 }
 function addModalOpt(){
   const wrap=document.getElementById('mq_opts');
   const nid='o'+Date.now().toString(36).slice(-4);
+  const idx = wrap.querySelectorAll('.editrow').length;
   const div=document.createElement('div'); div.className='editrow';
-  div.innerHTML=`<span class="radiomark" onclick="setModalCorrect('${nid}')" id="mk_${nid}" style="width:20px;height:20px;border:1.5px solid var(--border);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">?</span>
+  div.innerHTML=`<span class="radiomark" data-idx="${idx}" onclick="setModalCorrect('${nid}')" id="mk_${nid}" style="${modalMarkStyle()}">${letter(idx)}</span>
     <input type="text" id="mo_${nid}" value="New option"><button class="btn ghost small" onclick="removeModalOpt('${nid}')">✕</button>`;
   wrap.appendChild(div);
 }
@@ -1133,13 +1429,26 @@ function removeModalOpt(oid){ const row=document.getElementById('mo_'+oid).close
 function saveModal(qid){
   const q=findQ(qid);
   q.text=document.getElementById('mq_text').value.trim();
-  const rows=[...document.querySelectorAll('#mq_opts .editrow')];
-  q.options = rows.map(r=>{
-    const input=r.querySelector('input[type=text]');
-    const id = input.id.replace('mo_','');
-    return {id, text: input.value.trim()};
-  });
-  q.correct = [...(window._modalCorrect||[])].filter(id=>q.options.some(o=>o.id===id));
+  q.type=document.getElementById('mq_type').value;
+  q.image=window._modalImage || null;
+
+  if(q.type==='numerical'){
+    const min=parseFloat(document.getElementById('mq_nummin').value);
+    const max=parseFloat(document.getElementById('mq_nummax').value);
+    q.numericMin = isNaN(min)? 0 : min;
+    q.numericMax = isNaN(max)? q.numericMin : max;
+    q.options=[]; q.correct=[];
+  } else {
+    const rows=[...document.querySelectorAll('#mq_opts .editrow')];
+    q.options = rows.map(r=>{
+      const input=r.querySelector('input[type=text]');
+      const id = input.id.replace('mo_','');
+      return {id, text: input.value.trim()};
+    });
+    q.correct = [...(window._modalCorrect||[])].filter(id=>q.options.some(o=>o.id===id));
+    q.numericMin = null; q.numericMax = null;
+  }
+
   q.marks = parseFloat(document.getElementById('mq_marks').value)||1;
   q.negativeMarks = parseFloat(document.getElementById('mq_neg').value)||0;
   q.status='edited'; q.lowConfidence=false;
@@ -1448,23 +1757,7 @@ function openProgressModal(testId, attemptId){
     <div class="modal" style="max-width:680px;">
       <h3 style="margin-bottom:2px;">${esc(a.student.name)}</h3>
       <p class="muted small" style="margin-bottom:16px;">${esc(a.student.class||'')} ${esc(a.student.roll||'')} · ${answered} / ${test.questions.length} answered so far · status: ${a.status==='invalidated'?'Reset':'In Progress / Expired'}</p>
-      ${test.questions.map((q,i)=>{
-        const given = (a.answers && a.answers[q.id]) || [];
-        const correctIds = q.correct || (key && key[q.id]) || null;
-        return `
-        <div class="qcard" style="margin-bottom:10px;">
-          <div class="qhead"><span class="qnum">Q${i+1}</span>${given.length? '' : '<span class="badge draft">Unattempted</span>'}</div>
-          <div class="qtext" style="font-size:14px;">${esc(q.text)}</div>
-          ${q.options.map(o=>{
-            const wasGiven = given.includes(o.id);
-            const isCorrect = correctIds ? correctIds.includes(o.id) : false;
-            let style='';
-            if(correctIds && isCorrect) style='color:var(--green); font-weight:600;';
-            else if(wasGiven && correctIds && !isCorrect) style='color:var(--red); text-decoration:line-through;';
-            return `<div class="opt" style="${style}"><span class="oletter" style="${wasGiven?'background:var(--ink);border-color:var(--ink);color:#fff;':''}">${wasGiven?'●':''}</span>${esc(o.text)}</div>`;
-          }).join('')}
-        </div>`;
-      }).join('')}
+      ${test.questions.map((q,i)=>renderQuestionReviewCard(q, i, (a.answers&&a.answers[q.id]), undefined, key && key[q.id])).join('')}
       <div class="row" style="justify-content:flex-end; margin-top:6px;">
         <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Close</button>
       </div>
@@ -1491,6 +1784,7 @@ function openResponseModal(testId, resultId){
   const test = getDB().tests[testId];
   const result = (getDB().results[testId]||[]).find(r=>r.id===resultId);
   if(!test || !result) return;
+  const key = answerKeyCache[testId] || null;
   const modal=document.createElement('div');
   modal.className='modalbg';
   modal.innerHTML = `
@@ -1498,24 +1792,8 @@ function openResponseModal(testId, resultId){
       <h3 style="margin-bottom:2px;">${esc(result.student.name)}</h3>
       <p class="muted small" style="margin-bottom:16px;">${esc(result.student.class||'')} ${esc(result.student.roll||'')}${result.student.mobile? ' · '+esc(result.student.mobile):''} · ${result.score} / ${result.maxScore} (${result.percentage.toFixed(1)}%)</p>
       ${test.questions.map((q,i)=>{
-        const given = result.answers[q.id]||[];
-        const correctIds = q.correct || (answerKeyCache[testId] && answerKeyCache[testId][q.id]) || [];
         const wasCorrect = result.perQuestionCorrect? result.perQuestionCorrect[q.id] : null;
-        return `
-        <div class="qcard" style="margin-bottom:10px;">
-          <div class="qhead"><span class="qnum">Q${i+1}</span>
-            ${wasCorrect===true? '<span class="badge verified">Correct</span>' : wasCorrect===false? '<span class="badge review">Incorrect</span>' : '<span class="badge draft">Unattempted</span>'}
-          </div>
-          <div class="qtext" style="font-size:14px;">${esc(q.text)}</div>
-          ${q.options.map(o=>{
-            const wasGiven = given.includes(o.id);
-            const isCorrect = correctIds.includes(o.id);
-            let style='';
-            if(isCorrect) style='color:var(--green); font-weight:600;';
-            else if(wasGiven && !isCorrect) style='color:var(--red); text-decoration:line-through;';
-            return `<div class="opt" style="${style}"><span class="oletter" style="${isCorrect?'background:var(--green);border-color:var(--green);color:#fff;':wasGiven?'background:var(--red);border-color:var(--red);color:#fff;':''}">${wasGiven?'●':''}</span>${esc(o.text)}</div>`;
-          }).join('')}
-        </div>`;
+        return renderQuestionReviewCard(q, i, result.answers[q.id], wasCorrect, key && key[q.id]);
       }).join('')}
       <div class="row" style="justify-content:flex-end; margin-top:6px;">
         <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Close</button>
@@ -1565,13 +1843,20 @@ function buildQuestionPaperDoc(test){
         new TextRun({ text:`   [${q.marks} mark${q.marks===1?'':'s'}]`, italics:true, size:18 })
       ]
     }));
-    q.options.forEach((o,oi)=>{
+    if(q.type==='numerical'){
       children.push(new Paragraph({
-        indent:{ left:420 },
-        spacing:{ after:40 },
-        children:[ new TextRun({ text:`${String.fromCharCode(65+oi)}. ${o.text}` }) ]
+        indent:{ left:420 }, spacing:{ after:40 },
+        children:[ new TextRun({ text:'Answer: ______________________________' }) ]
       }));
-    });
+    } else {
+      q.options.forEach((o,oi)=>{
+        children.push(new Paragraph({
+          indent:{ left:420 },
+          spacing:{ after:40 },
+          children:[ new TextRun({ text:`${String.fromCharCode(65+oi)}. ${o.text}` }) ]
+        }));
+      });
+    }
   });
 
   return new Document({ sections:[{ properties:{}, children }] });
@@ -1918,20 +2203,18 @@ async function startAttempt(){
 
   el.innerHTML = `<div class="fullload"><span class="spinner"></span>Starting…</div>`;
   const mobileKey = sanitizeMobile(attemptState.student.mobile);
-  // A "claim" doc at a deterministic ID is how this works without student
-  // accounts: firestore.rules only allows *creating* this doc, never
-  // overwriting it, so a second attempt fails outright rather than
-  // silently succeeding — no query or Cloud Function needed to check
-  // "has this already been used".
+  // Always writes with increment(1) and never reads first: Firestore
+  // resolves a missing field as 0, so a first-ever attempt is naturally a
+  // "create" landing on count 1, and every attempt after is an "update"
+  // adding 1 more. firestore.rules refuses the write once count would
+  // exceed this test's own "Allowed attempts per student" setting — that
+  // number is now genuinely enforced, not just a label in Configure.
   if(mobileKey){
     try{
       await dbf.collection('tests').doc(t.id).collection('mobileClaims').doc(mobileKey)
-        .set({ student: attemptState.student, claimedAt: now });
+        .set({ student: attemptState.student, count: firebase.firestore.FieldValue.increment(1), updatedAt: now }, {merge:true});
     }catch(err){
-      // No extra read here on purpose — the failed write above already
-      // told us everything we need (it exists), and a lookup just to
-      // fetch a name would cost another Firestore read for no real gain.
-      el.innerHTML = `<div class="empty"><h3>Already attempted</h3><p class="small muted">This student has already attempted this test. If this is a mistake, ask your teacher.</p></div>`;
+      el.innerHTML = `<div class="empty"><h3>Already attempted</h3><p class="small muted">This student has already used up the allowed attempts for this test. If this is a mistake, ask your teacher.</p></div>`;
       return;
     }
   }
@@ -1978,6 +2261,20 @@ function isDeadlineError(err){
   // ever allow or deny, not explain why.
   return !!err && err.code==='permission-denied';
 }
+/** Toggles the "you're offline, we're retrying" banner directly in the
+    DOM rather than forcing a full re-render — a re-render mid-sync would
+    disrupt a student who's mid-typing a numerical answer. */
+function setOfflineState(isOffline){
+  attemptState._offline = isOffline;
+  const el = document.getElementById('offlineBanner');
+  if(el) el.style.display = isOffline ? 'block' : 'none';
+}
+window.addEventListener('online', ()=>{
+  if(attemptState && attemptState.phase==='exam' && !attemptState.preview) syncProgressSafe();
+});
+window.addEventListener('offline', ()=>{
+  if(attemptState && attemptState.phase==='exam') setOfflineState(true);
+});
 /** Push the current answers/marks/tab-switches straight to Firestore, and
     refresh our clock-offset using Firestore's own serverTimestamp — this
     is what keeps the visible timer honest without needing a Cloud
@@ -1995,13 +2292,19 @@ async function syncProgress(){
   const hb = snap.data().heartbeatAt;
   if(hb && hb.toMillis) attemptState.clockOffset = hb.toMillis() - Date.now();
 }
+// Every answer/nav action calls this. On a genuine connectivity failure it
+// now surfaces a visible banner and keeps retrying (every heartbeat, and
+// immediately on reconnect) instead of silently doing nothing — the risk
+// before was a student losing answers with no indication anything was wrong.
 function syncProgressSafe(){
-  syncProgress().catch(err=>{ if(isDeadlineError(err)) finishExam(true); });
+  syncProgress()
+    .then(()=> setOfflineState(false))
+    .catch(err=>{ if(isDeadlineError(err)) finishExam(true); else setOfflineState(true); });
 }
 async function heartbeat(){
   if(attemptState.phase!=='exam') return;
-  try{ await syncProgress(); }
-  catch(err){ if(isDeadlineError(err)) finishExam(true); }
+  try{ await syncProgress(); setOfflineState(false); }
+  catch(err){ if(isDeadlineError(err)) finishExam(true); else setOfflineState(true); }
 }
 /** Remaining time, anchored to the server's clock (via the periodically
     refreshed clockOffset) rather than the browser's own — so winding the
@@ -2017,15 +2320,50 @@ function tickTimer(){
   if(tb){ tb.textContent=fmtTime(rem); tb.classList.toggle('low', rem<60000); }
   if(rem<=0){ clearInterval(window._examTimer); finishExam(true); }
 }
+function examTypeLabel(type){
+  return type==='multiple' ? 'MULTIPLE CHOICE — SELECT ALL THAT APPLY'
+    : type==='truefalse' ? 'TRUE OR FALSE'
+    : type==='numerical' ? 'NUMERICAL ANSWER'
+    : 'SINGLE CHOICE';
+}
 function drawExam(){
   const el=document.getElementById('examshell');
   const t=attemptState.test;
   const qid = attemptState.order[attemptState.currentIdx];
   const q = t.questions.find(x=>x.id===qid);
-  const optIds = attemptState.optOrder[qid];
   const answered = attemptState.answers[qid]||[];
+  const imageHtml = q.image? `<img src="${q.image}" style="max-width:100%; border-radius:6px; margin:10px 0;">` : '';
+
+  let bodyHtml;
+  if(q.type==='numerical'){
+    const current = answered.length? answered[0] : '';
+    bodyHtml = `
+      <div style="margin:14px 0;">
+        <input type="number" step="any" inputmode="decimal" value="${esc(String(current))}"
+          placeholder="Type your numeric answer"
+          style="font-size:18px; padding:14px 16px; width:100%; max-width:280px; border:1.5px solid var(--border); border-radius:6px; box-sizing:border-box;"
+          oninput="setNumericalAnswer('${qid}', this.value)" onblur="syncProgressSafe()">
+        <p class="small muted" style="margin-top:8px;">Enter a number — decimals are fine (e.g. 35.5).</p>
+      </div>`;
+  } else {
+    const optIds = attemptState.optOrder[qid];
+    const isMultiple = q.type==='multiple';
+    bodyHtml = `
+      <div class="examoptions">
+        ${optIds.map(oid=>{
+          const o=q.options.find(x=>x.id===oid);
+          const idx=optIds.indexOf(oid);
+          const sel=answered.includes(oid);
+          const markStyle = isMultiple ? 'border-radius:4px;' : '';
+          return `<div class="optbig ${sel?'sel':''}" onclick="selectOption('${qid}','${oid}')">
+            <span class="oletter" style="${markStyle}">${isMultiple? (sel?'✓':'') : letter(idx)}</span><span class="otext">${esc(o.text)}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }
 
   el.innerHTML = `
+    <div id="offlineBanner" class="warnbanner" style="display:${attemptState._offline?'block':'none'};">⚠ You appear to be offline. Your most recent answers may not be saved yet — please don't close this tab. We'll keep retrying automatically.</div>
     <div class="exambar">
       <div>
         <div style="font-weight:700;">${esc(t.meta.name)}</div>
@@ -2035,18 +2373,11 @@ function drawExam(){
     </div>
 
     <div class="qnum">QUESTION ${attemptState.currentIdx+1} OF ${t.questions.length} · ${q.marks} mark${q.marks===1?'':'s'}</div>
+    <div style="font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--amber); font-size:13px; margin:6px 0 2px;">${examTypeLabel(q.type)}</div>
     <div class="qtext" style="font-size:17px;">${esc(q.text)}</div>
+    ${imageHtml}
 
-    <div class="examoptions">
-      ${optIds.map(oid=>{
-        const o=q.options.find(x=>x.id===oid);
-        const idx=optIds.indexOf(oid);
-        const sel=answered.includes(oid);
-        return `<div class="optbig ${sel?'sel':''}" onclick="selectOption('${qid}','${oid}')">
-          <span class="oletter">${letter(idx)}</span><span class="otext">${esc(o.text)}</span>
-        </div>`;
-      }).join('')}
-    </div>
+    ${bodyHtml}
 
     <div class="examfoot">
       <div class="row">
@@ -2077,6 +2408,26 @@ function selectOption(qid,oid){
     attemptState.answers[qid]=[oid];
   }
   syncProgressSafe(); drawExam();
+}
+// Typing in a number field can't trigger a full drawExam() on every
+// keystroke (that would destroy and recreate the input, breaking focus
+// and cursor position). Instead: update state, refresh only the palette
+// dot directly, and debounce the actual save so continuous typing doesn't
+// fire a Firestore write per character — onblur above forces an
+// immediate save the moment the student moves on.
+let _numDebounce = null;
+function setNumericalAnswer(qid, value){
+  const v = String(value).trim();
+  attemptState.answers[qid] = v.length? [v] : [];
+  clearTimeout(_numDebounce);
+  _numDebounce = setTimeout(syncProgressSafe, 800);
+  const idx = attemptState.order.indexOf(qid);
+  const dot = document.querySelectorAll('.pnode')[idx];
+  if(dot){
+    dot.classList.remove('answered','review');
+    if(attemptState.marked[qid]) dot.classList.add('review');
+    else if(v.length) dot.classList.add('answered');
+  }
 }
 function clearAnswer(qid){ delete attemptState.answers[qid]; syncProgressSafe(); drawExam(); }
 function toggleMark(qid){ attemptState.marked[qid]=!attemptState.marked[qid]; syncProgressSafe(); drawExam(); }
@@ -2132,10 +2483,8 @@ async function finishExam(auto){
     t.questions.forEach(q=>{
       maxScore += q.marks;
       const given = attemptState.answers[q.id] || [];
-      if(given.length===0){ unattempted++; return; }
-      const correct = new Set(q.correct||[]);
-      const givenSet = new Set(given);
-      const isCorrect = correct.size===givenSet.size && [...correct].every(c=>givenSet.has(c));
+      const isCorrect = isAnswerCorrect(q, given, null);
+      if(isCorrect===null){ unattempted++; return; }
       perQuestionCorrect[q.id]=isCorrect;
       if(isCorrect){ score+=q.marks; correctCount++; }
       else{
@@ -2205,24 +2554,8 @@ function drawResult(){
     <div style="max-width:640px; margin:24px auto 60px;">
       <h3 style="margin-bottom:14px; font-size:16px;">Review your answers</h3>
       ${t.questions.map((q,i)=>{
-        const given = r.answers[q.id]||[];
-        const correctIds = q.correct||[];
         const wasCorrect = r.perQuestionCorrect? r.perQuestionCorrect[q.id] : null;
-        return `
-        <div class="qcard" style="margin-bottom:10px;">
-          <div class="qhead"><span class="qnum">Q${i+1}</span>
-            ${wasCorrect===true? '<span class="badge verified">Correct</span>' : wasCorrect===false? '<span class="badge review">Incorrect</span>' : '<span class="badge draft">Unattempted</span>'}
-          </div>
-          <div class="qtext" style="font-size:14px;">${esc(q.text)}</div>
-          ${q.options.map(o=>{
-            const wasGiven = given.includes(o.id);
-            const isCorrect = correctIds.includes(o.id);
-            let style='';
-            if(isCorrect) style='color:var(--green); font-weight:600;';
-            else if(wasGiven && !isCorrect) style='color:var(--red); text-decoration:line-through;';
-            return `<div class="opt" style="${style}"><span class="oletter" style="${isCorrect?'background:var(--green);border-color:var(--green);color:#fff;':wasGiven?'background:var(--red);border-color:var(--red);color:#fff;':''}">${wasGiven?'●':''}</span>${esc(o.text)}</div>`;
-          }).join('')}
-        </div>`;
+        return renderQuestionReviewCard(q, i, r.answers[q.id], wasCorrect, null);
       }).join('')}
     </div>` : '';
 
@@ -2241,7 +2574,6 @@ function drawResult(){
         ${showDeduction? `<div><div class="n" style="color:var(--red);">-${r.negativeDeduction}</div><div class="l">Negative deduction</div></div>`:''}
       </div>`:''}
       <div class="muted small">Time taken: ${fmtTime(r.timeTakenMs)}${r.autoSubmitted? ' · auto-submitted at time limit':''}</div>
-      ${attemptState.preview? '' : `<p class="small muted" style="margin-top:16px;">Your result has already been saved to your teacher's dashboard.</p>`}
     </div>
     ${reviewHtml}
     ${exitBtn}`;
