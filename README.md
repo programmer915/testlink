@@ -66,26 +66,43 @@ anything useful.
 **Teacher side**
 - Upload a question paper as PDF, a photo/scan, a `.txt` file, or pasted
   text — parsed automatically into questions, options, and answers
+- **AI conversion prompt**: a copiable prompt for pasting your question
+  paper (in any messy layout) into an AI assistant, which reformats it
+  into text this app's parser can extract automatically
 - Mandatory verification screen (✓ Verified / ⚠ Needs Review / ✎ Edited)
   before anything can be published — extraction errors never go live silently
-- Full question editor: text, options, correct answer(s), marks, negative
-  marks, reordering
+- Full question editor: single-choice, multiple-choice, true/false, and
+  numerical (accepted-range) questions, each with text, an optional
+  image, marks, and negative marks
 - **Question Bank**: save any verified question for reuse, and pull saved
   questions into any future test instead of retyping them
 - Test configuration: duration, opens-at, hard deadline, attempts allowed,
   negative marking, question/option randomization, review permissions,
   result visibility, pass percentage
+- **Preview as Student**: walk through the exact exam UI and result
+  screen before publishing — never touches the server, never counts as
+  a real attempt
 - One-click publish → shareable link, live the moment it's published
 - **Question Paper export**: generate the current test as a clean,
   print-ready `.docx` — title, total marks, duration, negative-marking
   rule, and every question with its options in the actual configured
   order, with no answers included
 - **Results dashboard**: per-student scores, tab-switch counts, class
-  average, pass rate, hardest/easiest question, a self-contained CSV
-  export (test name/marks/duration/averages included as a header block,
-  not just the raw rows), and a per-student "View responses" breakdown
-  showing exactly what they answered against the correct answer,
-  question by question
+  average, pass rate, a self-contained CSV export (test name/marks/
+  duration/averages included as a header block, not just the raw rows),
+  and a per-student "View responses" breakdown showing exactly what they
+  answered against the correct answer, question by question
+- **Question-wise analytics**: for every question — attempted/
+  unattempted/correct/wrong counts, accuracy, average marks earned, and
+  a difficulty rating (Easy/Moderate/Hard) derived from actual student
+  performance, with flags for high-wrong-rate and frequently-skipped
+  questions
+- **Unfinished Attempts view**: see who's currently mid-exam versus who
+  started but never finished (derived from each attempt's own time
+  allowance, not a separate stored status), with started-at, elapsed
+  time, last activity, questions answered, and tab switches — plus a
+  Reset action that clears a stuck attempt so the student can restart
+  under the exact same rules a fresh attempt would follow
 - **Remove a wrong or duplicate submission**, or **release a mobile
   number** whose attempt got stuck without finishing — both directly
   from the Results page
@@ -96,14 +113,18 @@ anything useful.
 **Student side**
 - Simple details form (name, class, roll number, mobile number) →
   instructions → timed exam
-- **One attempt per mobile number per test**, enforced server-side —
-  see the Security model section for exactly what this does and doesn't
-  guard against
+- **Up to the teacher's configured number of attempts per mobile
+  number**, enforced server-side — see the Security model section for
+  exactly what this does and doesn't guard against
 - Question palette, mark-for-review, clear answer, tab-switch tracking,
   auto-submit at zero
 - Refreshing, closing and reopening the link, or reconnecting after a
   dropped connection all resume the same attempt with the exact time
   remaining — the timer never pauses, resets, or restarts
+- A visible warning (with automatic retry) if the connection drops
+  mid-exam, instead of silently failing to save an answer
+- Every question clearly labelled by type — Single Choice, Multiple
+  Choice, True/False, or Numerical Answer — right above the question text
 - Result screen shown immediately on submit — score, correct/incorrect/
   unattempted breakdown, and negative-marking deduction shown separately
   when applicable — for "Show immediately"/"Score only" tests. "Hidden"
@@ -131,14 +152,17 @@ server's clock, not the student's device.
   they already have the ID for; they cannot browse or list other
   students' attempts. Only the owning teacher can list all attempts for
   a test, or delete a wrong/duplicate one from the Results page.
-- **One mobile number = one attempt per test**, enforced atomically by a
-  Firestore rule (a second write to the same claim ID is rejected as an
-  "update", never silently allowed) rather than a query a client could
-  route around. Since there's no SMS/OTP verification, a determined
-  student can still type a fake number — this stops accidental or casual
+- **Each mobile number gets up to the test's own "Allowed attempts per
+  student" limit** (Configure), enforced by an atomically incrementing
+  counter on a Firestore rule — the count can only ever go up by exactly
+  one per write, and never past the configured limit, with no query or
+  Cloud Function needed to check "how many times has this number been
+  used". Since there's no SMS/OTP verification, a determined student can
+  still type a fake number — this stops accidental or casual
   re-attempts, not deliberate dishonesty. If a genuine attempt gets stuck
   (dropped connection, never finished), the teacher's "Release a mobile
-  number" tool on the Results page clears it for a real retry.
+  number" tool on the Results page clears it for a real retry, on top of
+  whatever attempts remained.
 - **Per-test answer-key handling, tied to the existing "Result
   visibility" setting**:
   - *Show immediately / Score only* — the answer key travels inside the
@@ -171,6 +195,38 @@ no server-side rewrites:
 - **GitHub Pages** — push this folder to a repo, enable Pages in Settings.
 - **Firebase Hosting** — `firebase deploy --only hosting`.
 
+## Staying within Firestore's free tier
+
+This app is built to run indefinitely on Firebase's free Spark plan, so a
+few things exist specifically to keep it there:
+
+- **A live document-size indicator in the test editor.** Every question
+  in a test — including any attached image — lives in one Firestore
+  document, which has a hard 1 MiB cap. The wizard now shows an
+  approximate running size (OK / getting large / critical / over limit)
+  on every step, recalculated on every edit. Saving and publishing are
+  both blocked outright once a test would exceed 1 MiB, with a plain
+  explanation, instead of failing silently or with a confusing server
+  error.
+- **No unnecessary Firestore reads during an exam.** Every answer save
+  and 30-second heartbeat now does exactly one write and zero reads.
+  (An earlier version read the document back after every write, to
+  fine-tune the on-screen timer — that cost a second Firestore
+  operation on every single sync, for a value that was only ever
+  cosmetic display, never actual enforcement.)
+- **The Results page's live listener shuts off the moment you navigate
+  away from it**, instead of continuing to consume reads in the
+  background for every student's heartbeat on a test you're no longer
+  looking at.
+- **Total stored data (the 1 GiB cap)** isn't actively managed by the
+  app — the practical mitigation is the same Delete button already on
+  the Dashboard: periodically removing old tests you no longer need
+  keeps long-term storage bounded. There's no automatic cleanup.
+
+None of this required Cloud Functions or Cloud Storage — both remain
+deliberately out of this build (see the Security model section above for
+why, and what would change if that constraint is ever lifted).
+
 ## Honest limitations, stated plainly
 
 - OCR accuracy on messy scans/handwriting will be rough — that's exactly
@@ -182,6 +238,13 @@ no server-side rewrites:
 - Question Bank items are flat (text/options/marks) — there's no tagging
   or search yet; fine for a small personal bank, not built to scale to
   hundreds of saved questions gracefully yet.
+- **Images live embedded in the test document itself** (as compressed
+  JPEG data), since this build has no separate file storage — there's no
+  extra setup step, but it means a test's total document size (all its
+  questions combined) has to stay under Firestore's 1 MiB-per-document
+  limit. A handful of diagrams per test is comfortably fine; dozens of
+  large images on one test is not. The printable `.docx` question paper
+  does not currently include images — only text and options.
 - **Firestore's free daily write quota (20,000/day) is a real ceiling.**
   Each student writes roughly one "heartbeat" every 30 seconds for as
   long as the exam is open, plus one write per answer change, plus the

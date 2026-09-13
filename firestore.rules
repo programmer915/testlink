@@ -85,14 +85,23 @@ service cloud.firestore {
       }
 
       // ---- mobile-number attempt limiting ------------------------------
-      // One document per (test, mobile number). Firestore treats a write
-      // to an existing document ID as an "update", not a "create" — since
-      // this rule only ever allows *create*, a second attempt from the
-      // same number is rejected outright, with no query or Cloud Function
-      // needed to check "has this number already been used".
+      // One document per (test, mobile number), holding a count. The
+      // client always writes with FieldValue.increment(1) and never reads
+      // first — Firestore resolves that against a missing field as 0, so
+      // the very first attempt is naturally a "create" with count 1, and
+      // every attempt after is an "update" with count = previous + 1. The
+      // rule simply refuses to let count exceed the test's own configured
+      // attempt limit, so "Allowed attempts per student" in Configure is
+      // now the real, enforced number — not just a label.
       match /mobileClaims/{mobileKey} {
-        allow create: if get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published';
-        allow get, list, update, delete: if isOwner(testId);
+        allow create: if
+          get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published' &&
+          request.resource.data.count <= get(/databases/$(database)/documents/tests/$(testId)).data.config.attempts;
+        allow update: if
+          get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published' &&
+          request.resource.data.count == resource.data.count + 1 &&
+          request.resource.data.count <= get(/databases/$(database)/documents/tests/$(testId)).data.config.attempts;
+        allow get, list, delete: if isOwner(testId);
       }
 
       // ---- private answer key (only for "hidden" result-visibility tests) --
@@ -150,14 +159,15 @@ service cloud.firestore {
     - A student can fetch (resume) only a specific attempt they already
       know the ID of; they cannot list or browse other students' attempts.
       Only the owning teacher can list all attempts for a test.
-    - One mobile number = one attempt per test, enforced atomically by
-      Firestore's create-vs-update distinction rather than a query. A
-      determined student can still type a fake number, since there's no
-      SMS/OTP verification here — this stops accidental/casual re-attempts,
-      not a deliberately dishonest one. The teacher's "Remove" button (on
-      a submitted result) and "Release a mobile number" tool (for a
-      stuck, never-submitted attempt) both clear the claim so a genuine
-      retry is always possible.
+    - Each mobile number gets up to the test's own "Allowed attempts per
+      student" limit (set in Configure), enforced atomically by an
+      incrementing counter rather than a query. A determined student can
+      still type a fake number, since there's no SMS/OTP verification
+      here — this stops accidental/casual re-attempts, not a deliberately
+      dishonest one. The teacher's "Remove" button (on a submitted
+      result) and "Release a mobile number" tool (for a stuck,
+      never-submitted attempt) both clear the claim so a genuine retry is
+      always possible, on top of whatever attempts remained.
 
   If the answer-key tradeoff on "immediate"/"score only" tests ever needs
   closing too, the fix is a Cloud Function that grades everything
