@@ -33,6 +33,10 @@ service cloud.firestore {
     // pass — this narrows misuse, it doesn't require phone verification.
     function matchesRoster(ownerId, className, mobileKey, student) {
       let rid = rosterId(ownerId, className);
+      return exists(/databases/$(database)/documents/classRosters/$(rid)/students/$(mobileKey)) &&
+        studentFieldsMatch(rid, mobileKey, student);
+    }
+    function studentFieldsMatch(rid, mobileKey, student) {
       let sdoc = get(/databases/$(database)/documents/classRosters/$(rid)/students/$(mobileKey)).data;
       return student.mobile == mobileKey
         && student.normalizedName == sdoc.normalizedName
@@ -192,10 +196,22 @@ service cloud.firestore {
         // is exactly the same "must already know the specific key" limit
         // documented for mobileClaims above. Listing (enumerating every
         // registered student and their name/roll) stays owner-only.
+        //
+        // Every check below guards with exists() on the roster PARENT doc
+        // first: a class the teacher has never imported a list for (or is
+        // importing into for the very first time) has no classRosters/{id}
+        // doc yet, and get(...).data on a nonexistent doc throws inside a
+        // rule rather than evaluating to false — without this guard, just
+        // opening a brand-new class's page (a list query) or running its
+        // first-ever import (a write) would fail with a raw
+        // "Missing or insufficient permissions" instead of working.
         allow get: if true;
-        allow list: if request.auth != null &&
-          get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid;
+        allow list: if request.auth != null && (
+          !exists(/databases/$(database)/documents/classRosters/$(rosterId)) ||
+          get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid
+        );
         allow write: if request.auth != null &&
+          exists(/databases/$(database)/documents/classRosters/$(rosterId)) &&
           get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid;
       }
     }

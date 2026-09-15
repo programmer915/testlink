@@ -291,15 +291,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -1371,6 +1369,22 @@ async function importClassList(className){
 
   toast('Importing…');
   try{
+    const cp = classPageCache[className] || {students:[], tests:[], attempts:[]};
+    let newStudents;
+    if(imp.mode==='replace'){
+      newStudents = valid.map(r=>({id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}));
+    } else {
+      const byMobile = {}; (cp.students||[]).forEach(s=>{ byMobile[s.id]=s; });
+      valid.forEach(r=>{ byMobile[r.mobile] = {id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}; });
+      newStudents = Object.values(byMobile);
+    }
+
+    // The roster PARENT doc must exist before any write to its students
+    // subcollection (firestore.rules checks ownership via that parent) —
+    // so this always runs first, including on a class's very first-ever
+    // import, when this .set() is what creates classRosters/{rid} at all.
+    await rosterRef.set({ ownerId:uidv, className, studentCount:newStudents.length, updatedAt:Date.now() }, {merge:true});
+
     if(imp.mode==='replace'){
       const existing = await studentsRef.get();
       const keep = new Set(valid.map(r=>r.mobile));
@@ -1391,17 +1405,6 @@ async function importClassList(className){
       });
       await batch.commit();
     }
-
-    const cp = classPageCache[className] || {students:[], tests:[], attempts:[]};
-    let newStudents;
-    if(imp.mode==='replace'){
-      newStudents = valid.map(r=>({id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}));
-    } else {
-      const byMobile = {}; (cp.students||[]).forEach(s=>{ byMobile[s.id]=s; });
-      valid.forEach(r=>{ byMobile[r.mobile] = {id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}; });
-      newStudents = Object.values(byMobile);
-    }
-    await rosterRef.set({ ownerId:uidv, className, studentCount:newStudents.length, updatedAt:Date.now() }, {merge:true});
 
     classPageCache[className] = {...cp, students:newStudents};
     classesIndex[className] = { studentCount:newStudents.length };
