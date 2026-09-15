@@ -8,6 +8,47 @@ service cloud.firestore {
         && request.auth.uid == get(/databases/$(database)/documents/tests/$(testId)).data.ownerId;
     }
 
+    // The deterministic class-roster doc ID: one roster per (teacher,
+    // class name), shared by every test that teacher assigns to that
+    // class — computed the same way here and in index.html's
+    // rosterIdFor(), so no query/lookup is ever needed to find it.
+    function rosterId(ownerId, className) {
+      return ownerId + '__' + className;
+    }
+    // A test with no assignedClass, or a class with no (or an empty)
+    // roster uploaded yet, has nothing to validate against — those tests
+    // keep the original open-registration behavior.
+    function rosterIsActive(ownerId, className) {
+      return className != null && className != ''
+        && exists(/databases/$(database)/documents/classRosters/$(rosterId(ownerId, className)))
+        && get(/databases/$(database)/documents/classRosters/$(rosterId(ownerId, className))).data.studentCount > 0;
+    }
+    // True once a roster IS active for this test's class AND the given
+    // mobile key + student fields match that roster's registered record
+    // for that mobile number exactly. index.html only ever writes the
+    // roster's own canonical name/class/roll into the attempt/claim (see
+    // submitDetails()), so a legitimate client always satisfies this
+    // trivially; a hand-crafted write still has to already know the
+    // correct registered name/class/roll for that exact mobile number to
+    // pass — this narrows misuse, it doesn't require phone verification.
+    function matchesRoster(ownerId, className, mobileKey, student) {
+      let rid = rosterId(ownerId, className);
+      let sdoc = get(/databases/$(database)/documents/classRosters/$(rid)/students/$(mobileKey)).data;
+      return student.mobile == mobileKey
+        && student.normalizedName == sdoc.normalizedName
+        && student.class == sdoc.class
+        && (sdoc.roll == '' || student.roll == sdoc.roll);
+    }
+    // Combines the two: only enforced when a class is assigned AND that
+    // class actually has an uploaded roster; otherwise this is a no-op
+    // (true) so older tests / classes without a list keep working exactly
+    // as before.
+    function classListOk(test, mobileKey, student) {
+      let className = ('meta' in test) && ('assignedClass' in test.meta) ? test.meta.assignedClass : '';
+      return !rosterIsActive(test.ownerId, className)
+        || matchesRoster(test.ownerId, className, mobileKey, student);
+    }
+
     // Validates a brand-new attempt document against the test's actual
     // rules — this is the only thing standing between a student and just
     // writing themselves unlimited time, since there's no Cloud Function
@@ -27,7 +68,9 @@ service cloud.firestore {
         // regardless of what value the client tries to send.
         && d.availableMs <= test.config.duration * 60000 + 1000
         && (test.config.deadlineAt == null
-            || d.availableMs <= (test.config.deadlineAt - d.startedAt) + 15000);
+            || d.availableMs <= (test.config.deadlineAt - d.startedAt) + 15000)
+        // Student must match this test's class list, if one is active.
+        && classListOk(test, d.mobileKey, d.student);
     }
 
     // ---- tests -------------------------------------------------------
@@ -96,7 +139,8 @@ service cloud.firestore {
       match /mobileClaims/{mobileKey} {
         allow create: if
           get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published' &&
-          request.resource.data.count <= get(/databases/$(database)/documents/tests/$(testId)).data.config.attempts;
+          request.resource.data.count <= get(/databases/$(database)/documents/tests/$(testId)).data.config.attempts &&
+          classListOk(get(/databases/$(database)/documents/tests/$(testId)).data, mobileKey, request.resource.data.student);
         allow update: if
           get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published' &&
           request.resource.data.count == resource.data.count + 1 &&
@@ -118,6 +162,42 @@ service cloud.firestore {
       // Each teacher's saved questions are entirely private to them.
       allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
       allow create: if request.auth != null && request.auth.uid == request.resource.data.ownerId;
+    }
+
+    // ---- class rosters (Classes tab / class list) ---------------------
+    // One roster doc per (teacher, class name), ID = rosterId() above; a
+    // students subcollection underneath holds one small doc per student,
+    // keyed by their own canonical 10-digit mobile number. Never one big
+    // spreadsheet-shaped document — each student doc stays tiny regardless
+    // of class size, so Firestore's 1MiB/doc cap never applies here, and a
+    // roster update only ever touches the specific student docs changed.
+    match /classRosters/{rosterId} {
+      // The roster doc's own fields (className, studentCount, ownerId,
+      // updatedAt) hold no student PII — get is public so a student's
+      // browser can cheaply check "does a roster exist for my class, and
+      // is it actually populated" (see rosterIsActive()) before validating
+      // an individual mobile number below. Listing every roster (which
+      // would expose other teachers' class names) stays owner-only.
+      allow get: if true;
+      allow list: if request.auth != null && resource.data.ownerId == request.auth.uid;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.ownerId;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+
+      match /students/{mobileKey} {
+        // A specific student record is readable by anyone who already
+        // knows that exact 10-digit mobile number and the roster it
+        // belongs to (mirrors the attempts/{attemptId} "get open, list
+        // owner-only" pattern) — this is what lets a student's own browser
+        // validate itself in submitDetails() without being signed in, and
+        // is exactly the same "must already know the specific key" limit
+        // documented for mobileClaims above. Listing (enumerating every
+        // registered student and their name/roll) stays owner-only.
+        allow get: if true;
+        allow list: if request.auth != null &&
+          get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid;
+        allow write: if request.auth != null &&
+          get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid;
+      }
     }
   }
 }
@@ -168,6 +248,20 @@ service cloud.firestore {
       result) and "Release a mobile number" tool (for a stuck,
       never-submitted attempt) both clear the claim so a genuine retry is
       always possible, on top of whatever attempts remained.
+    - When a test's class has an uploaded, non-empty class list, both the
+      attempt and its mobile-number claim are rejected server-side unless
+      the submitted mobile number, case/space-normalized name, class, and
+      (where the roster has one) roll number all match that class list's
+      registered record for that exact mobile number — see classListOk()
+      above. A class with no list uploaded yet (or a test with no class
+      assigned at all) is left exactly as open as before. As with the
+      mobile-claim limit above, this narrows misuse rather than
+      eliminating it: since there's no phone verification, anyone who can
+      read a specific mobile number's roster entry (which the "get" rule
+      on classRosters/.../students necessarily allows, mirroring the
+      attempts pattern) could in principle copy its exact fields — it
+      stops accidental wrong-name/wrong-class entries and casual
+      impersonation, not a determined, informed attacker.
 
   If the answer-key tradeoff on "immediate"/"score only" tests ever needs
   closing too, the fix is a Cloud Function that grades everything

@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
@@ -265,21 +266,38 @@ function letter(i){ return String.fromCharCode(65+i); }
 // Normalizes a mobile number down to digits only, so "+91 98765-43210" and
 // "9876543210" collide to the same dedup key regardless of formatting.
 function sanitizeMobile(m){ return (m||'').replace(/[^0-9]/g,''); }
+// Canonical mobile key used everywhere a student is identified: strips all
+// non-digits, then keeps the LAST 10 digits (so a "+91 98765 43210" country-
+// code entry and a bare "9876543210" entry collide to the same 10-digit
+// key). Returns '' if there aren't at least 10 digits — callers treat that
+// as invalid.
+function canonicalMobile10(m){
+  const d = sanitizeMobile(m);
+  if(d.length < 10) return '';
+  return d.slice(-10);
+}
+// Collapses internal whitespace and trims, then lowercases — used as the
+// case-insensitive, extra-space-insensitive key for matching a typed name
+// against a class list's registered name.
+function normalizeName(s){ return (s||'').trim().replace(/\s+/g,' ').toLowerCase(); }
+function normalizeField(s){ return (s||'').trim().replace(/\s+/g,' '); }
+// Deterministic Firestore doc ID for a teacher's class roster: every test
+// with the same owner + assignedClass shares one roster, computed the same
+// way client-side and in firestore.rules (no lookup/query needed).
+function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
 
 /* ---------------- Firebase (required) ----------------
    TestLink is now a server-backed app: every teacher signs in, and every
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -469,6 +487,19 @@ function renderQuestionReviewCard(q, index, given, wasCorrect, keyEntry){
       ${body}
     </div>`;
 }
+/** The single definition of an attempt's display status, shared by the
+    Results/Unfinished-Attempts view and the Classes page so both always
+    agree. Firestore only ever stores 'in-progress', 'submitted', or (once
+    a teacher resets one) 'invalidated' — "In Progress" vs. "Expired/Time
+    Up" is derived here, purely from data already on the attempt: once its
+    own fixed time allowance has elapsed without a submission, the student
+    is gone and it will never complete on its own. Reconnecting or a
+    teacher opening Results never changes this and never grants extra time. */
+function deriveAttemptStatus(a, now){
+  if(a.status==='submitted') return 'Submitted';
+  if(a.status==='invalidated') return 'Reset/Invalidated';
+  return (now - a.startedAt > a.availableMs) ? 'Expired/Time Up' : 'In Progress';
+}
 function gradeAttempt(test, key, a){
   let score=0, maxScore=0, correctCount=0, incorrectCount=0, unattempted=0, negativeDeduction=0;
   const perQuestionCorrect={};
@@ -638,12 +669,13 @@ function parseQuestionPaper(raw){
 }
 
 /* ---------------- default test object ---------------- */
+const CLASS_OPTIONS = ['6','7','8','9','10','11','12'];
 function newTest(){
   return {
     id: uid('t'),
     status:'draft', // draft | published
     createdAt: Date.now(),
-    meta:{ name:'Untitled Test' },
+    meta:{ name:'Untitled Test', assignedClass:'' },
     questions: [],
     config:{
       duration: 30,           // minutes
@@ -669,6 +701,17 @@ let attemptState = null; // in-memory current student attempt
 function render(){
   const hash = location.hash || '#/dashboard';
   const app = document.getElementById('app');
+
+  // The Results page's listener re-reads on every change to any attempt in
+  // that test (including every student's 30s heartbeat) — cheap while the
+  // teacher is actually looking at it, wasteful once they've navigated
+  // away and it's just idling in the background. Tear it down immediately
+  // whenever the route isn't Results; subscribeResults() re-creates it
+  // the moment they open a results page again.
+  if(!hash.startsWith('#/results/') && window._unsubResults){
+    window._unsubResults();
+    window._unsubResults = null;
+  }
 
   if(!FIREBASE_ENABLED){
     app.innerHTML = `
@@ -716,6 +759,26 @@ function render(){
   let route='dashboard';
   if(hash.startsWith('#/create')) { body=viewWizard(); route='create'; }
   else if(hash.startsWith('#/bank')) { body=viewBank(); route='bank'; }
+  else if(hash.startsWith('#/classes/')) {
+    const cls = decodeURIComponent(hash.slice('#/classes/'.length));
+    const cp = classPageCache[cls];
+    if(!cp){
+      if(!classPageLoading.has(cls)) loadClassPage(cls);
+      body = `<div class="fullload"><span class="spinner"></span>Loading ${esc(cls)}…</div>`;
+    } else {
+      body = viewClassDetail(cls);
+    }
+    route='classes';
+  }
+  else if(hash.startsWith('#/classes')) {
+    if(!classesIndexLoaded){
+      if(!window._classesIndexLoading) loadClassesIndex();
+      body = `<div class="fullload"><span class="spinner"></span>Loading classes…</div>`;
+    } else {
+      body = viewClasses();
+    }
+    route='classes';
+  }
   else if(hash.startsWith('#/results/')) {
     const tid=hash.split('/')[2];
     subscribeResults(tid);
@@ -748,6 +811,7 @@ function render(){
         <span class="${route==='dashboard'?'active':''}" onclick="location.hash='#/dashboard'">Dashboard</span>
         <span class="${route==='create'?'active':''}" onclick="startNewTest()">Create Test</span>
         <span class="${route==='bank'?'active':''}" onclick="location.hash='#/bank'">Question Bank</span>
+        <span class="${route==='classes'?'active':''}" onclick="location.hash='#/classes'">Classes</span>
         <span onclick="doLogout()">Sign out (${esc(currentUser.email)})</span>
       </div>
     </div>
@@ -820,6 +884,7 @@ function viewDashboard(){
   const tests=Object.values(db.tests).sort((a,b)=>b.createdAt-a.createdAt);
   const drafts=tests.filter(t=>t.status==='draft');
   const published=tests.filter(t=>t.status==='published');
+  const filteredPublished = dashboardClassFilter==='all' ? published : published.filter(t=>(t.meta.assignedClass||'')===dashboardClassFilter);
   const totalStudents = Object.values(db.results).reduce((a,r)=>a+r.length,0);
 
   return `
@@ -838,9 +903,15 @@ function viewDashboard(){
       <div class="stat"><div class="num">${totalStudents}</div><div class="lbl">Submissions recorded</div></div>
     </div>
 
-    <div class="section-title">Published tests</div>
-    <div class="test-list">
-      ${published.length? published.map(t=>testRow(t,db)).join('') : `<div class="empty card"><h3>Nothing published yet</h3><p>Publish a test to get a shareable link for students.</p></div>`}
+    <div class="row" style="justify-content:space-between; align-items:center; margin-top:26px;">
+      <div class="section-title" style="margin-top:0; margin-bottom:0;">Published tests</div>
+      <select onchange="setDashboardClassFilter(this.value)" style="max-width:180px;">
+        <option value="all" ${dashboardClassFilter==='all'?'selected':''}>All classes</option>
+        ${CLASS_OPTIONS.map(c=>`<option value="Class ${c}" ${dashboardClassFilter==='Class '+c?'selected':''}>Class ${c}</option>`).join('')}
+      </select>
+    </div>
+    <div class="test-list" style="margin-top:12px;">
+      ${filteredPublished.length? filteredPublished.map(t=>testRow(t,db)).join('') : `<div class="empty card"><h3>${dashboardClassFilter==='all'?'Nothing published yet':'No published tests for Class '+dashboardClassFilter.replace('Class ','')}</h3><p>${dashboardClassFilter==='all'?'Publish a test to get a shareable link for students.':'Try a different class, or switch the filter back to All classes.'}</p></div>`}
     </div>
 
     <div class="section-title">Drafts</div>
@@ -849,6 +920,8 @@ function viewDashboard(){
     </div>
   `;
 }
+let dashboardClassFilter = 'all';
+function setDashboardClassFilter(v){ dashboardClassFilter=v; render(); }
 function testRow(t,db){
   const n = (db.results[t.id]||[]).length;
   return `
@@ -857,6 +930,7 @@ function testRow(t,db){
         <h4>${esc(t.meta.name)}</h4>
         <div class="meta">${t.questions.length} questions · ${n} submission${n===1?'':'s'} · created ${new Date(t.createdAt).toLocaleDateString()}
           <span class="badge ${t.status==='published'?'published':'draft'}" style="margin-left:8px;">${t.status}</span>
+          ${t.meta.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(t.meta.assignedClass)}</span>` : ''}
         </div>
       </div>
       <div class="ta">
@@ -880,6 +954,474 @@ function wireDashboardEvents(){
     if(!confirm('Delete this test and all its results? This cannot be undone.')) return;
     deleteTest(id); toast('Deleted'); render();
   };
+}
+
+/* ============================================================
+   CLASSES
+   Tests are grouped by their existing meta.assignedClass field.
+   A class's roster ("class list") lives at
+   classRosters/{ownerUid}__{className}/students/{canonicalMobile} — one
+   small doc per student, never one big spreadsheet blob (Spark-friendly:
+   no document ever grows with the class, and Firestore's 1MiB/doc cap
+   never comes into play here).
+
+   Everything on this page is fetched with one-time .get() calls, never
+   onSnapshot listeners — a teacher browsing Classes shouldn't hold open a
+   dozen live listeners (one per test, ticking on every heartbeat) that
+   just idle in the background. Refresh buttons re-fetch on demand.
+   ============================================================ */
+let classesIndex = {};         // className -> {studentCount}
+let classesIndexLoaded = false;
+let classPageCache = {};       // className -> {students, tests, attempts, fetchedAt} | {error}
+let classPageLoading = new Set();
+let classListImport = {};      // className -> {rows, mode, fileName}
+
+function cssId(s){ return (s||'').replace(/[^a-zA-Z0-9]/g,'_'); }
+
+async function loadClassesIndex(){
+  window._classesIndexLoading = true;
+  const uidv = currentUser.uid;
+  const names = CLASS_OPTIONS.map(c=>'Class '+c);
+  await Promise.all(names.map(async cn=>{
+    try{
+      const snap = await dbf.collection('classRosters').doc(rosterIdFor(uidv, cn)).get();
+      classesIndex[cn] = { studentCount: snap.exists ? (snap.data().studentCount||0) : 0 };
+    }catch(e){ classesIndex[cn] = { studentCount: 0 }; }
+  }));
+  classesIndexLoaded = true;
+  window._classesIndexLoading = false;
+  render();
+}
+function refreshClassesIndex(){ classesIndexLoaded = false; render(); }
+
+function viewClasses(){
+  const db = getDB();
+  const tests = Object.values(db.tests);
+  const rows = CLASS_OPTIONS.map(c=>{
+    const cn = 'Class '+c;
+    const classTests = tests.filter(t=>(t.meta.assignedClass||'')===cn);
+    const published = classTests.filter(t=>t.status==='published').length;
+    const reg = (classesIndex[cn]||{}).studentCount || 0;
+    return `
+      <div class="test-row">
+        <div class="ti">
+          <h4>${cn}</h4>
+          <div class="meta">${classTests.length} test${classTests.length===1?'':'s'} (${published} published) · ${reg} registered student${reg===1?'':'s'}</div>
+        </div>
+        <div class="ta">
+          <button class="btn secondary small" onclick="location.hash='#/classes/${encodeURIComponent(cn)}'">Open →</button>
+        </div>
+      </div>`;
+  }).join('');
+  const unassigned = tests.filter(t=>!(t.meta.assignedClass||'')).length;
+  return `
+    <div class="dash-head">
+      <div>
+        <h1 style="font-size:26px;">Classes</h1>
+        <p class="muted" style="margin-top:6px;">Tests, registered students, and results grouped by class.</p>
+      </div>
+      <button class="btn secondary" onclick="refreshClassesIndex()">Refresh counts</button>
+    </div>
+    <div class="test-list" style="margin-top:18px;">${rows}</div>
+    ${unassigned? `<p class="muted small" style="margin-top:16px;">${unassigned} test${unassigned===1?'':'s'} ${unassigned===1?"doesn't":"don't"} have a class assigned and won't appear above — set one in that test's Configure step.</p>` : ''}
+  `;
+}
+
+/** One-time fetch of everything a class page needs: the roster (registered
+    students), the tests assigned to this class (already in the realtime-
+    synced local cache — no extra read), and every attempt across those
+    tests (one .get() per test's attempts subcollection). Hidden-visibility
+    tests with ungraded submissions are graded here too, exactly like
+    subscribeResults() does, so "Average/highest score" and "Pass %" are
+    correct regardless of a test's result-visibility setting. */
+async function loadClassPage(className){
+  if(classPageLoading.has(className)) return;
+  classPageLoading.add(className);
+  try{
+    const uidv = currentUser.uid;
+    const rid = rosterIdFor(uidv, className);
+    const studentsSnap = await dbf.collection('classRosters').doc(rid).collection('students').get();
+    const students = studentsSnap.docs.map(d=>({id:d.id, ...d.data()}));
+
+    const tests = Object.values(getDB().tests).filter(t=>(t.meta.assignedClass||'')===className);
+
+    const attempts = [];
+    for(const t of tests){
+      const snap = await dbf.collection('tests').doc(t.id).collection('attempts').get();
+      snap.forEach(d=>{ const a=d.data(); a.id=d.id; a._testId=t.id; a._testName=t.meta.name; attempts.push(a); });
+    }
+    for(const t of tests){
+      const needGrading = attempts.filter(a=>a._testId===t.id && a.status==='submitted' && typeof a.percentage!=='number');
+      if(needGrading.length){
+        const key = await ensureAnswerKey(t.id);
+        needGrading.forEach(a=>Object.assign(a, gradeAttempt(t, key, a)));
+      }
+    }
+    classPageCache[className] = { students, tests, attempts, fetchedAt: Date.now() };
+  }catch(err){
+    classPageCache[className] = { error: err.message, students:[], tests:[], attempts:[], fetchedAt: Date.now() };
+  }
+  classPageLoading.delete(className);
+  render();
+}
+function refreshClassPage(className){ delete classPageCache[className]; render(); }
+
+/** Statistic definitions (all computed client-side over the one-time
+    fetch in loadClassPage):
+    - Active participants: distinct registered students with an attempt
+      currently "In Progress" (started, not yet submitted, time not yet up).
+    - Submitted / In Progress / Expired-Time-Up / Reset-Invalidated:
+      deriveAttemptStatus() applied to every attempt across this class's tests.
+    - Average/Highest score, Pass rate: over graded submitted attempts only
+      ("hidden" tests are graded on the fly, see loadClassPage).
+    - Most missed: the registered student(s) who did NOT submit the largest
+      number of this class's *published* tests.
+    - Best/most consistent: the student with the highest average percentage
+      across their own submissions; ties broken by the lowest spread
+      (standard deviation) across those submissions, then by more submissions.
+    All per-student aggregation is keyed by the class list's canonical
+    10-digit mobile number, never by the free-text name typed into an
+    attempt — so a typo or case difference in an attempt can't split one
+    student into two, or merge two different students together. */
+function computeClassStats(className){
+  const cp = classPageCache[className];
+  const now = Date.now();
+  const rosterByMobile = {};
+  cp.students.forEach(s=>{ rosterByMobile[s.id]=s; });
+
+  const withStatus = cp.attempts.map(a=>({
+    ...a, _status: deriveAttemptStatus(a, now),
+    _mobile: canonicalMobile10(a.student && a.student.mobile)
+  }));
+  const submitted = withStatus.filter(a=>a._status==='Submitted');
+  const inProgress = withStatus.filter(a=>a._status==='In Progress');
+  const expired = withStatus.filter(a=>a._status==='Expired/Time Up');
+  const reset = withStatus.filter(a=>a._status==='Reset/Invalidated');
+  const activeParticipants = new Set(inProgress.map(a=>a._mobile || a.id)).size;
+
+  const graded = submitted.filter(a=>typeof a.percentage==='number');
+  const avgScore = graded.length ? graded.reduce((s,a)=>s+a.percentage,0)/graded.length : null;
+  const highestScore = graded.length ? Math.max(...graded.map(a=>a.percentage)) : null;
+  const passCount = graded.filter(a=>{
+    const t = cp.tests.find(x=>x.id===a._testId);
+    return t ? a.percentage >= t.config.passPercent : false;
+  }).length;
+  const passPct = graded.length ? (passCount/graded.length*100) : null;
+
+  const perStudent = {};
+  graded.forEach(a=>{
+    const mob = a._mobile; if(!mob) return;
+    const roster = rosterByMobile[mob];
+    const name = roster ? roster.name : ((a.student && a.student.name) || 'Unknown');
+    if(!perStudent[mob]) perStudent[mob] = {mobile:mob, name, scores:[], testIds:new Set()};
+    perStudent[mob].scores.push(a.percentage);
+    perStudent[mob].testIds.add(a._testId);
+  });
+
+  const publishedTests = cp.tests.filter(t=>t.status==='published');
+  let mostMissed = [];
+  if(publishedTests.length && cp.students.length){
+    const missedList = cp.students.map(s=>{
+      const doneIds = perStudent[s.id] ? perStudent[s.id].testIds : new Set();
+      return { name:s.name, mobile:s.id, missed: publishedTests.filter(t=>!doneIds.has(t.id)).length };
+    });
+    const maxMissed = Math.max(0, ...missedList.map(m=>m.missed));
+    if(maxMissed>0) mostMissed = missedList.filter(m=>m.missed===maxMissed);
+  }
+
+  let best = null;
+  Object.values(perStudent).forEach(p=>{
+    const avg = p.scores.reduce((a,b)=>a+b,0)/p.scores.length;
+    const variance = p.scores.length>1 ? p.scores.reduce((s,v)=>s+Math.pow(v-avg,2),0)/p.scores.length : 0;
+    const stddev = Math.sqrt(variance);
+    const cand = {name:p.name, mobile:p.mobile, avg, stddev, count:p.scores.length};
+    if(!best || cand.avg>best.avg || (cand.avg===best.avg && cand.stddev<best.stddev) || (cand.avg===best.avg && cand.stddev===best.stddev && cand.count>best.count)) best=cand;
+  });
+
+  const events = [];
+  withStatus.forEach(a=>{
+    const roster = rosterByMobile[a._mobile];
+    const name = roster ? roster.name : ((a.student && a.student.name) || 'Unknown');
+    events.push({ts:a.startedAt, type:'started', name, testName:a._testName});
+    if(a.status==='submitted') events.push({ts:(a.submittedAt||a.startedAt), type:'submitted', name, testName:a._testName});
+  });
+  events.sort((x,y)=>y.ts-x.ts);
+
+  return {
+    counts:{ submitted:submitted.length, inProgress:inProgress.length, expired:expired.length, reset:reset.length },
+    activeParticipants, avgScore, highestScore, passPct,
+    mostMissed, best, recentActivity: events.slice(0,15),
+    registeredCount: cp.students.length, publishedTestsCount: publishedTests.length
+  };
+}
+
+function viewClassDetail(className){
+  const cp = classPageCache[className];
+  if(cp.error){
+    return `<button class="btn ghost small" onclick="location.hash='#/classes'">← Back to classes</button>
+      <div class="empty card" style="margin-top:14px;"><h3>Couldn't load this class</h3><p class="small muted">${esc(cp.error)}</p></div>`;
+  }
+  const stats = computeClassStats(className);
+  const tests = cp.tests.slice().sort((a,b)=>b.createdAt-a.createdAt);
+
+  return `
+    <button class="btn ghost small" onclick="location.hash='#/classes'">← Back to classes</button>
+    <div class="dash-head" style="margin-top:10px;">
+      <div>
+        <h1 style="font-size:26px;">${esc(className)}</h1>
+        <p class="muted" style="margin-top:6px;">${stats.registeredCount} registered student${stats.registeredCount===1?'':'s'} · ${tests.length} test${tests.length===1?'':'s'}</p>
+      </div>
+      <button class="btn secondary small" onclick="refreshClassPage('${esc(className)}')">Refresh</button>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num">${stats.activeParticipants}</div><div class="lbl">Active participants</div></div>
+      <div class="stat"><div class="num">${stats.counts.submitted}</div><div class="lbl">Submitted</div></div>
+      <div class="stat"><div class="num">${stats.counts.inProgress}</div><div class="lbl">In Progress</div></div>
+      <div class="stat"><div class="num">${stats.counts.expired}</div><div class="lbl">Expired/Time Up</div></div>
+      <div class="stat"><div class="num">${stats.counts.reset}</div><div class="lbl">Reset/Invalidated</div></div>
+    </div>
+    <div class="stat-row" style="margin-top:10px;">
+      <div class="stat"><div class="num">${stats.avgScore!=null? stats.avgScore.toFixed(1)+'%':'—'}</div><div class="lbl">Average score</div></div>
+      <div class="stat"><div class="num">${stats.highestScore!=null? stats.highestScore.toFixed(1)+'%':'—'}</div><div class="lbl">Highest score</div></div>
+      <div class="stat"><div class="num">${stats.passPct!=null? stats.passPct.toFixed(0)+'%':'—'}</div><div class="lbl">Pass rate</div></div>
+    </div>
+
+    <div class="row" style="gap:14px; margin-top:26px; align-items:flex-start; flex-wrap:wrap;">
+      <div class="card pad" style="flex:1; min-width:260px;">
+        <h4 style="margin-bottom:8px;">Most missed</h4>
+        ${stats.mostMissed.length===0? `<p class="small muted">Not enough published-test data yet.</p>` :
+          `<p class="small muted" style="margin-bottom:6px;">Missed the most published tests in this class (${stats.mostMissed[0].missed} of ${stats.publishedTestsCount}):</p>
+           ${stats.mostMissed.map(m=>`<div class="small">${esc(m.name)}</div>`).join('')}`}
+      </div>
+      <div class="card pad" style="flex:1; min-width:260px;">
+        <h4 style="margin-bottom:8px;">Best / most consistent</h4>
+        ${!stats.best? `<p class="small muted">No graded submissions yet.</p>` :
+          `<p class="small" style="margin-bottom:4px;"><strong>${esc(stats.best.name)}</strong></p>
+           <p class="small muted">Average ${stats.best.avg.toFixed(1)}% across ${stats.best.count} submission${stats.best.count===1?'':'s'}${stats.best.count>1? ` · ±${stats.best.stddev.toFixed(1)} spread`:''}</p>`}
+      </div>
+    </div>
+
+    ${renderClassListSection(className)}
+
+    <div class="section-title" style="margin-top:30px;">Tests in ${esc(className)}</div>
+    <div class="test-list">
+      ${tests.length? tests.map(t=>testRow(t,{results:{[t.id]: cp.attempts.filter(a=>a._testId===t.id && a.status==='submitted')}})).join('') : `<div class="empty card"><p>No tests assigned to this class yet.</p></div>`}
+    </div>
+
+    <div class="section-title" style="margin-top:30px;">Recent activity</div>
+    <div class="card pad" style="overflow:auto;">
+      ${stats.recentActivity.length===0? `<p class="small muted">Nothing yet.</p>` :
+        `<table class="results"><thead><tr><th>When</th><th>Student</th><th>Test</th><th>Event</th></tr></thead><tbody>
+          ${stats.recentActivity.map(e=>`<tr><td>${fmtDateTimeExact(e.ts)}</td><td>${esc(e.name)}</td><td>${esc(e.testName)}</td><td>${e.type==='submitted'?'Submitted':'Started'}</td></tr>`).join('')}
+        </tbody></table>`}
+    </div>
+  `;
+}
+
+/* -------- Class List (roster) upload/preview/import -------- */
+function renderClassListSection(className){
+  const cp = classPageCache[className];
+  const imp = classListImport[className];
+  return `
+    <div class="section-title" style="margin-top:30px;">Class List</div>
+    <div class="card pad">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <p class="small muted" style="margin:0; max-width:520px;">Upload an .xlsx/.xls sheet with columns <span class="mono">Name | Class | Roll Number | Mobile Number</span> to register this class's students. Students are matched to attempts by their mobile number, not by name alone.</p>
+        <div class="row" style="gap:8px;">
+          <button class="btn secondary small" onclick="downloadClassListTemplate()">Download template</button>
+          <button class="btn amber small" onclick="document.getElementById('rosterFile_${cssId(className)}').click()">Upload .xlsx/.xls</button>
+          <input type="file" id="rosterFile_${cssId(className)}" accept=".xlsx,.xls" style="display:none" onchange="handleClassListFile(this.files[0], '${esc(className)}')">
+        </div>
+      </div>
+      ${imp ? renderClassListPreview(className) : ''}
+      <div class="hr"></div>
+      <p class="small muted" style="margin-bottom:8px;">${cp.students.length} student${cp.students.length===1?'':'s'} registered</p>
+      ${cp.students.length===0? `<p class="small muted">No students registered yet — upload a list above.</p>` : `
+      <div style="overflow:auto;">
+      <table class="results">
+        <thead><tr><th>Name</th><th>Roll No.</th><th>Mobile</th><th></th></tr></thead>
+        <tbody>
+          ${cp.students.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(s=>`
+            <tr><td>${esc(s.name)}</td><td>${esc(s.roll||'')}</td><td class="mono">${esc(s.id)}</td>
+            <td><button class="btn ghost small" onclick="removeClassListStudent('${esc(className)}','${s.id}')">Remove</button></td></tr>
+          `).join('')}
+        </tbody>
+      </table>
+      </div>`}
+    </div>
+  `;
+}
+function downloadClassListTemplate(){
+  const wsData = [
+    ['Name','Class','Roll Number','Mobile Number'],
+    ['Aditi Sharma','Class 10','23','9876543210'],
+    ['Rohan Verma','Class 10','24','9123456780']
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Class List');
+  XLSX.writeFile(wb, 'class_list_template.xlsx');
+}
+function findField(row, candidates){
+  const keys = Object.keys(row);
+  for(const k of keys){
+    const nk = k.trim().toLowerCase().replace(/\s+/g,' ');
+    if(candidates.includes(nk)) return row[k];
+  }
+  return '';
+}
+/** Parses + validates every row from the uploaded sheet, but writes
+    nothing yet — see importClassList() for the actual Firestore writes,
+    which only run once the teacher reviews this preview and confirms. */
+function validateClassListRows(raw, className){
+  const rows = raw.map((r,i)=>{
+    const name = normalizeField(String(findField(r, ['name','student name','full name'])||''));
+    const cls = normalizeField(String(findField(r, ['class'])||''));
+    const roll = normalizeField(String(findField(r, ['roll number','roll no','roll no.','roll'])||''));
+    const mobileRaw = String(findField(r, ['mobile number','mobile','mobile no','mobile no.','phone','phone number'])||'');
+    const canonical = canonicalMobile10(mobileRaw);
+    const issues = [];
+    if(!name) issues.push('Missing name');
+    if(!cls) issues.push('Missing class');
+    else if(normalizeField(cls).toLowerCase()!==normalizeField(className).toLowerCase()) issues.push(`Class mismatch (expected ${className})`);
+    if(!roll) issues.push('Missing roll number');
+    if(!canonical) issues.push('Invalid or non-10-digit mobile number');
+    return { row:i+2, name, class:cls, roll, mobileRaw, mobile:canonical, normalizedName:normalizeName(name), issues };
+  });
+  const firstSeenAt = {};
+  rows.forEach((r,i)=>{
+    if(!r.mobile) return;
+    if(firstSeenAt[r.mobile]===undefined) firstSeenAt[r.mobile]=i;
+    else{
+      r.issues.push('Duplicate mobile number');
+      rows[firstSeenAt[r.mobile]].issues.push('Duplicate mobile number');
+    }
+  });
+  rows.forEach(r=>{ r.issues = [...new Set(r.issues)]; });
+  return rows;
+}
+function handleClassListFile(file, className){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    try{
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, {defval:''});
+      if(!raw.length){ toast('That sheet has no data rows.'); return; }
+      const rows = validateClassListRows(raw, className);
+      classListImport[className] = { rows, mode:'merge', fileName:file.name };
+      render();
+    }catch(err){ toast('Could not read that file: '+err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+function renderClassListPreview(className){
+  const imp = classListImport[className];
+  const rows = imp.rows;
+  const valid = rows.filter(r=>r.issues.length===0);
+  const invalid = rows.filter(r=>r.issues.length>0);
+  return `
+    <div class="card pad" style="margin-top:14px; background:var(--paper);">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <p class="small" style="margin:0;"><strong>${esc(imp.fileName)}</strong> — ${valid.length} valid, ${invalid.length} with issues (excluded from import)</p>
+        <button class="btn ghost small" onclick="cancelClassListImport('${esc(className)}')">Cancel</button>
+      </div>
+      <div style="max-height:280px; overflow:auto; margin-top:10px;">
+      <table class="results">
+        <thead><tr><th>Row</th><th>Name</th><th>Class</th><th>Roll</th><th>Mobile</th><th>Status</th></tr></thead>
+        <tbody>
+          ${rows.map(r=>`
+            <tr style="${r.issues.length? 'background:var(--red-soft);':''}">
+              <td>${r.row}</td><td>${esc(r.name)}</td><td>${esc(r.class)}</td><td>${esc(r.roll)}</td><td>${esc(r.mobile||r.mobileRaw)}</td>
+              <td class="small">${r.issues.length? esc(r.issues.join('; ')) : '✓ OK'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div class="row" style="align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap;">
+        <label class="small" style="display:flex; align-items:center; gap:6px;">
+          <input type="radio" name="importMode_${cssId(className)}" value="merge" ${imp.mode==='merge'?'checked':''} onchange="setClassListImportMode('${esc(className)}','merge')"> Merge/Add (keep existing students, add/update these)
+        </label>
+        <label class="small" style="display:flex; align-items:center; gap:6px;">
+          <input type="radio" name="importMode_${cssId(className)}" value="replace" ${imp.mode==='replace'?'checked':''} onchange="setClassListImportMode('${esc(className)}','replace')"> Replace (this file becomes the entire list)
+        </label>
+      </div>
+      <button class="btn amber small" style="margin-top:10px;" ${valid.length===0?'disabled':''} onclick="importClassList('${esc(className)}')">Import ${valid.length} valid student${valid.length===1?'':'s'}</button>
+    </div>
+  `;
+}
+function setClassListImportMode(className, mode){ classListImport[className].mode = mode; render(); }
+function cancelClassListImport(className){ delete classListImport[className]; render(); }
+/** Writes only to classRosters/{rosterId}/students — never touches
+    tests, attempts, or mobileClaims, so importing (in either mode) can
+    never delete an attempt, a result, or reset an attempt-count counter. */
+async function importClassList(className){
+  const imp = classListImport[className];
+  if(!imp) return;
+  const valid = imp.rows.filter(r=>r.issues.length===0);
+  if(!valid.length) return;
+  const uidv = currentUser.uid;
+  const rid = rosterIdFor(uidv, className);
+  const rosterRef = dbf.collection('classRosters').doc(rid);
+  const studentsRef = rosterRef.collection('students');
+
+  toast('Importing…');
+  try{
+    if(imp.mode==='replace'){
+      const existing = await studentsRef.get();
+      const keep = new Set(valid.map(r=>r.mobile));
+      const toDelete = existing.docs.filter(d=>!keep.has(d.id));
+      for(let i=0;i<toDelete.length;i+=400){
+        const batch = dbf.batch();
+        toDelete.slice(i,i+400).forEach(d=>batch.delete(d.ref));
+        await batch.commit();
+      }
+    }
+    for(let i=0;i<valid.length;i+=400){
+      const batch = dbf.batch();
+      valid.slice(i,i+400).forEach(r=>{
+        batch.set(studentsRef.doc(r.mobile), {
+          name:r.name, class:className, roll:r.roll,
+          normalizedName:r.normalizedName, updatedAt:Date.now()
+        }, {merge:true});
+      });
+      await batch.commit();
+    }
+
+    const cp = classPageCache[className] || {students:[], tests:[], attempts:[]};
+    let newStudents;
+    if(imp.mode==='replace'){
+      newStudents = valid.map(r=>({id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}));
+    } else {
+      const byMobile = {}; (cp.students||[]).forEach(s=>{ byMobile[s.id]=s; });
+      valid.forEach(r=>{ byMobile[r.mobile] = {id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}; });
+      newStudents = Object.values(byMobile);
+    }
+    await rosterRef.set({ ownerId:uidv, className, studentCount:newStudents.length, updatedAt:Date.now() }, {merge:true});
+
+    classPageCache[className] = {...cp, students:newStudents};
+    classesIndex[className] = { studentCount:newStudents.length };
+    delete classListImport[className];
+    toast('Class list imported');
+    render();
+  }catch(err){ toast('Import failed: '+err.message); }
+}
+async function removeClassListStudent(className, mobile){
+  if(!confirm('Remove this student from the class list? This does not delete any test attempts, results, or attempt counters.')) return;
+  const uidv = currentUser.uid;
+  const rid = rosterIdFor(uidv, className);
+  try{
+    await dbf.collection('classRosters').doc(rid).collection('students').doc(mobile).delete();
+    const cp = classPageCache[className];
+    const newStudents = cp.students.filter(s=>s.id!==mobile);
+    await dbf.collection('classRosters').doc(rid).set({studentCount:newStudents.length, updatedAt:Date.now()}, {merge:true});
+    classPageCache[className] = {...cp, students:newStudents};
+    classesIndex[className] = { studentCount:newStudents.length };
+    toast('Removed');
+    render();
+  }catch(err){ toast('Could not remove: '+err.message); }
 }
 
 /* ============================================================
@@ -913,6 +1455,49 @@ function viewBank(){
    CREATE / EDIT WIZARD
    ============================================================ */
 let wizardStep = 'upload'; // upload -> verify -> configure -> preview
+/* ---------------- Firestore document-size safety check ----------------
+   Firestore hard-caps a single document at 1 MiB. Every question in a
+   test — including any attached image, base64-encoded — lives inside
+   one "tests/{id}" document, so a test with a few uncompressed images
+   can realistically approach that ceiling. This estimates the size the
+   same way it'll actually be sent (JSON, measured in real bytes via
+   Blob, not JS string length which undercounts multi-byte characters)
+   so teachers see it coming instead of hitting an opaque write failure. */
+const FIRESTORE_DOC_LIMIT = 1048576; // 1 MiB, Firestore's actual per-document cap
+function estimateTestSizeBytes(test){
+  try{ return new Blob([JSON.stringify(test)]).size; }
+  catch(e){ return 0; }
+}
+function testSizeStatus(bytes){
+  if(bytes >= FIRESTORE_DOC_LIMIT) return 'over';
+  if(bytes >= 950*1024) return 'critical';
+  if(bytes >= 800*1024) return 'warning';
+  return 'ok';
+}
+function fmtBytes(n){
+  if(n < 1024) return n+' B';
+  if(n < 1024*1024) return (n/1024).toFixed(0)+' KB';
+  return (n/(1024*1024)).toFixed(2)+' MiB';
+}
+function renderSizeIndicator(){
+  const bytes = estimateTestSizeBytes(wizardDraft);
+  const status = testSizeStatus(bytes);
+  const pct = Math.min(100, (bytes/FIRESTORE_DOC_LIMIT)*100);
+  const colors = {ok:'var(--green)', warning:'var(--amber)', critical:'#C1531B', over:'var(--red)'};
+  const labels = {ok:'OK', warning:'Getting large', critical:'Critical — close to limit', over:'Over limit — will not save'};
+  return `
+    <div class="card pad" style="margin-bottom:16px; padding:11px 16px;">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span class="small">Document size (approximate): <strong>${fmtBytes(bytes)}</strong> / 1 MiB</span>
+        <span class="small" style="color:${colors[status]}; font-weight:700;">${labels[status]}</span>
+      </div>
+      <div style="height:6px; background:var(--paper-line); border-radius:3px; overflow:hidden;">
+        <div style="height:100%; width:${pct}%; background:${colors[status]};"></div>
+      </div>
+      ${status==='over'? `<p class="small" style="color:var(--red); margin:8px 0 0;">This test is too large to save — Firestore caps a single document at 1 MiB. Remove or further compress an image in Verify to continue; nothing past this point will save to the server until it's back under the limit.</p>` : ''}
+      ${status==='critical'? `<p class="small muted" style="margin:8px 0 0;">Close to Firestore's 1 MiB document limit — consider removing or compressing an image soon.</p>` : ''}
+    </div>`;
+}
 function viewWizard(){
   if(!wizardDraft) wizardDraft = newTest();
   const steps=[['upload','1. Upload'],['verify','2. Verify'],['configure','3. Configure'],['preview','4. Publish']];
@@ -925,16 +1510,33 @@ function viewWizard(){
     <div class="steps">
       ${steps.map(([k,label])=>`<div class="step ${wizardStep===k?'on':''}" onclick="wizardStep='${k}'; render();">${label}</div>`).join('')}
     </div>
+    ${renderSizeIndicator()}
     <div id="wizbody">${wizardStep==='upload'?stepUpload(): wizardStep==='verify'?stepVerify(): wizardStep==='configure'?stepConfigure(): stepPreview()}</div>
   `;
 }
 function afterWizardRender(){ if(wizardStep==='upload') setupDragDrop(); }
-function persistDraft(){ saveTest(wizardDraft); }
+/** Recalculated fresh on every call — cheap even for a large test, and it's
+    the single choke point every edit path (question edits, config changes,
+    publish) already flows through, so this is the one place that needs to
+    know about the 1 MiB limit. Returns whether the save actually went
+    through, so callers like publishTest() can avoid claiming success when
+    it didn't. */
+function persistDraft(){
+  const bytes = estimateTestSizeBytes(wizardDraft);
+  if(bytes >= FIRESTORE_DOC_LIMIT){
+    toast('Too large to save (over Firestore\'s 1 MiB document limit) — this change is kept on-screen but not yet saved to the server. Remove or shrink an image to continue.');
+    return false;
+  }
+  saveTest(wizardDraft);
+  return true;
+}
 
 /* ---- Step 1: Upload ---- */
 const AI_CONVERSION_PROMPT = `I have a question paper that needs converting into a specific plain-text format so I can upload it to a quiz tool. Please reformat the question paper I paste below (or attach) into exactly this layout, question by question.
 
-For a multiple-choice or true/false question, use lettered options and a letter answer:
+IMPORTANT — output format: put your entire answer inside a single fenced code block (triple backticks), with nothing before or after it, and do not use any markdown formatting (no bold, no bullet points, no auto-numbered lists) inside it. This matters because outside a code block, chat interfaces often collapse single line breaks and squash multiple options onto one line — a code block is what keeps every option on its own separate line.
+
+For a multiple-choice or true/false question, use lettered options and a letter answer, each on its own line:
 1. <question text>
 A) <option A>
 B) <option B>
@@ -958,9 +1560,10 @@ Answer: <minimum number>-<maximum number>
 Rules:
 - Number every question sequentially starting at 1, followed by a period and a space (e.g. "1. ").
 - Give each option a single capital letter followed by a closing parenthesis and a space (e.g. "A) ").
-- Include an "Answer:" line right after each question (after its options, if it has any). If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
+- Each option MUST be on its own separate line — never place two or more options on the same line, and never separate them with commas or slashes instead of a line break.
+- Include an "Answer:" line right after each question (after its options, if it has any), on its own line. If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
 - Only use the numeric "Answer: min-max" or "Answer: number" format for questions that genuinely expect a typed numeric answer, not multiple choice — never mix lettered options with a numeric answer line on the same question.
-- Output ONLY the reformatted questions in the format above — no headers, page numbers, explanations, or commentary.
+- Output ONLY the reformatted questions in the format above, inside the single code block described above — no headers, page numbers, explanations, or commentary, and nothing outside that code block.
 - Keep the original question text and options exactly as written; only reformat the layout and numbering.
 
 Here is the question paper to convert:
@@ -1119,7 +1722,10 @@ function setupDragDrop(){
   });
 }
 function runExtraction(){
-  const text = document.getElementById('pasteArea').value.trim();
+  let text = document.getElementById('pasteArea').value.trim();
+  // If this was copied from an AI assistant's reply as a fenced code block,
+  // drop the ``` fence lines so they don't show up as stray text.
+  text = text.replace(/^```[a-zA-Z]*\n?/,'').replace(/\n?```$/,'').trim();
   if(!text){ toast('Paste or upload some text first'); return; }
   const extracted = parseQuestionPaper(text);
   if(extracted.length===0){ toast('No questions detected — check the format, or add manually'); return; }
@@ -1472,6 +2078,12 @@ function stepConfigure(){
         <div><label class="field">Opens at</label><input type="datetime-local" value="${toLocalInput(c.startAt)}" onchange="c_setDate('startAt', this.value)"></div>
         <div><label class="field">Final deadline (no starts after this)</label><input type="datetime-local" value="${toLocalInput(c.deadlineAt)}" onchange="c_setDate('deadlineAt', this.value)"></div>
         <div><label class="field">Passing percentage</label><input type="number" min="0" max="100" value="${c.passPercent}" onchange="c_set('passPercent', parseInt(this.value)||0)"></div>
+        <div><label class="field">Assigned class (optional)</label>
+          <select onchange="m_set('assignedClass', this.value)">
+            <option value="">Not assigned</option>
+            ${CLASS_OPTIONS.map(cl=>`<option value="Class ${cl}" ${wizardDraft.meta.assignedClass==='Class '+cl?'selected':''}>Class ${cl}</option>`).join('')}
+          </select>
+        </div>
         <div><label class="field">Result visibility</label>
           <select onchange="c_set('resultVisibility', this.value)">
             <option value="immediate" ${c.resultVisibility==='immediate'?'selected':''}>Show immediately</option>
@@ -1496,6 +2108,7 @@ function stepConfigure(){
 }
 function c_set(k,v){ wizardDraft.config[k]=v; persistDraft(); }
 function c_setDate(k,v){ wizardDraft.config[k] = v? new Date(v).getTime() : null; persistDraft(); }
+function m_set(k,v){ wizardDraft.meta[k]=v; persistDraft(); }
 
 /* ---- Step 4: Preview & Publish ---- */
 function stepPreview(){
@@ -1541,9 +2154,16 @@ function buildShareLink(t){
   return `${location.origin}${location.pathname}#/attempt/${t.slug}`;
 }
 function publishTest(){
+  const bytes = estimateTestSizeBytes(wizardDraft);
+  if(bytes >= FIRESTORE_DOC_LIMIT){
+    alert('This test is too large to publish — its size is over Firestore\'s 1 MiB document limit (see the indicator above). Remove or compress an image, then try again.');
+    return;
+  }
   wizardDraft.status='published';
   if(!wizardDraft.slug){ wizardDraft.slug = Math.random().toString(36).slice(2,9)+Math.random().toString(36).slice(2,5); }
-  persistDraft(); render(); toast('Published! Link ready to share.');
+  const saved = persistDraft();
+  if(!saved){ wizardDraft.status='draft'; render(); return; } // shouldn't happen given the check above, but never claim success on a skipped save
+  render(); toast('Published! Link ready to share.');
 }
 function unpublish(){ wizardDraft.status='draft'; persistDraft(); render(); }
 function copyLink(){
@@ -1691,18 +2311,13 @@ function renderUnfinishedSection(testId){
   const test = getDB().tests[testId];
   const raw = getDB().unfinished[testId] || [];
   const now = Date.now();
-  const withStatus = raw.map(a=>{
-    let status;
-    if(a.status==='invalidated') status='Reset';
-    else status = (now - a.startedAt > a.availableMs) ? 'Expired' : 'In Progress';
-    return {...a, _status: status, _elapsed: now - a.startedAt};
-  });
+  const withStatus = raw.map(a=>({...a, _status: deriveAttemptStatus(a, now), _elapsed: now - a.startedAt}));
   const counts = {
     inprogress: withStatus.filter(a=>a._status==='In Progress').length,
-    expired: withStatus.filter(a=>a._status==='Expired').length,
-    reset: withStatus.filter(a=>a._status==='Reset').length
+    expired: withStatus.filter(a=>a._status==='Expired/Time Up').length,
+    reset: withStatus.filter(a=>a._status==='Reset/Invalidated').length
   };
-  const filterMap = {inprogress:'In Progress', expired:'Expired', reset:'Reset'};
+  const filterMap = {inprogress:'In Progress', expired:'Expired/Time Up', reset:'Reset/Invalidated'};
   const filtered = unfinishedFilter==='all' ? withStatus : withStatus.filter(a=>a._status===filterMap[unfinishedFilter]);
   const totalQ = test? test.questions.length : '?';
 
@@ -1711,8 +2326,8 @@ function renderUnfinishedSection(testId){
     <div class="row" style="gap:8px; margin-bottom:14px;">
       <button class="btn ${unfinishedFilter==='all'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('all')">All (${withStatus.length})</button>
       <button class="btn ${unfinishedFilter==='inprogress'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('inprogress')">In Progress (${counts.inprogress})</button>
-      <button class="btn ${unfinishedFilter==='expired'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('expired')">Expired (${counts.expired})</button>
-      <button class="btn ${unfinishedFilter==='reset'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('reset')">Reset (${counts.reset})</button>
+      <button class="btn ${unfinishedFilter==='expired'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('expired')">Expired/Time Up (${counts.expired})</button>
+      <button class="btn ${unfinishedFilter==='reset'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('reset')">Reset/Invalidated (${counts.reset})</button>
     </div>
     ${filtered.length===0? `<div class="empty card"><p>No matching attempts.</p></div>` : `
     <div class="card pad" style="overflow:auto;">
@@ -1722,8 +2337,8 @@ function renderUnfinishedSection(testId){
           ${filtered.map(a=>{
             const answered = Object.keys(a.answers||{}).length;
             const lastActivityMs = (a.heartbeatAt && a.heartbeatAt.toMillis) ? a.heartbeatAt.toMillis() : (a.invalidatedAt || a.startedAt);
-            const badgeClass = a._status==='Expired' ? 'review' : a._status==='Reset' ? 'draft' : 'edited';
-            const canReset = a._status!=='Reset';
+            const badgeClass = a._status==='Expired/Time Up' ? 'review' : a._status==='Reset/Invalidated' ? 'draft' : 'edited';
+            const canReset = a._status!=='Reset/Invalidated';
             return `
             <tr>
               <td>${esc(a.student.name)}</td>
@@ -1758,7 +2373,7 @@ function openProgressModal(testId, attemptId){
   modal.innerHTML = `
     <div class="modal" style="max-width:680px;">
       <h3 style="margin-bottom:2px;">${esc(a.student.name)}</h3>
-      <p class="muted small" style="margin-bottom:16px;">${esc(a.student.class||'')} ${esc(a.student.roll||'')} · ${answered} / ${test.questions.length} answered so far · status: ${a.status==='invalidated'?'Reset':'In Progress / Expired'}</p>
+      <p class="muted small" style="margin-bottom:16px;">${esc(a.student.class||'')} ${esc(a.student.roll||'')} · ${answered} / ${test.questions.length} answered so far · status: ${deriveAttemptStatus(a, Date.now())}</p>
       ${test.questions.map((q,i)=>renderQuestionReviewCard(q, i, (a.answers&&a.answers[q.id]), undefined, key && key[q.id])).join('')}
       <div class="row" style="justify-content:flex-end; margin-top:6px;">
         <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Close</button>
@@ -1888,7 +2503,7 @@ async function removeResultEntry(testId, resultId, mobile){
   if(!confirm('Remove this submission? This cannot be undone, and the student will be able to attempt again if their mobile number is released too.')) return;
   try{
     await dbf.collection('tests').doc(testId).collection('attempts').doc(resultId).delete();
-    const key = sanitizeMobile(mobile);
+    const key = canonicalMobile10(mobile);
     if(key) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(key).delete().catch(()=>{});
     toast('Submission removed');
   }catch(err){ toast('Could not remove: '+err.message); }
@@ -1899,8 +2514,8 @@ function promptReleaseMobile(testId){
   releaseMobile(testId, mobile);
 }
 async function releaseMobile(testId, mobile){
-  const key = sanitizeMobile(mobile);
-  if(key.length<6){ toast('Enter a valid mobile number'); return; }
+  const key = canonicalMobile10(mobile);
+  if(!key){ toast('Enter a valid 10-digit mobile number'); return; }
   try{
     await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(key).delete();
     // Also invalidate (never delete) any stuck, never-submitted attempt
@@ -2078,9 +2693,22 @@ function applyAttemptResponse(a, attemptId){
   attemptState.currentIdx = a.currentIdx || 0;
   attemptState.startedAt = a.startedAt;
   attemptState.availableMs = a.availableMs;
-  attemptState.clockOffset = 0; // corrected on the first sync/heartbeat, see syncProgress()
+  attemptState.clockOffset = 0; // always 0 now — see syncProgress() for why the read-back was removed
   attemptState.phase = 'exam';
   localStorage.setItem(attemptState.storageKey, attemptId);
+
+  // Resuming (refresh, reopened tab, reconnect after being offline) must
+  // never hand back time that already ran out while this browser was away.
+  // If the allowance is already spent, skip straight to an auto-submit
+  // instead of drawing the exam UI and waiting for the next 1s tick — that
+  // gap would otherwise let a resumed-but-expired attempt sit interactable,
+  // even if only briefly. firestore.rules independently rejects the write
+  // too if it somehow arrives past the deadline anyway.
+  if(Date.now() - attemptState.startedAt >= attemptState.availableMs){
+    finishExam(true); // finishExam() draws its own "Submitting…" state immediately
+    return;
+  }
+
   attachExamRuntime();
   drawAttempt();
   syncProgressSafe(); // pulls a real clock-offset reading immediately, rather than waiting for the first heartbeat
@@ -2103,14 +2731,26 @@ function drawAttempt(){
     el.innerHTML = `
       <div class="instr">
         <h2 style="margin-bottom:6px;">${esc(t.meta.name)}</h2>
-        <p class="muted small" style="margin-bottom:22px;">Enter your details to begin.</p>
+        <p class="muted small" style="margin-bottom:14px;">Enter your details to begin.</p>
+        <ul class="small muted" style="margin:0 0 20px; padding-left:18px; line-height:1.7;">
+          <li><strong>Name:</strong> Enter your full registered name.</li>
+          <li><strong>Class:</strong> Enter/select the correct class.</li>
+          <li><strong>Roll number:</strong> Enter the registered roll number.</li>
+          <li><strong>Mobile number:</strong> Enter the registered 10-digit number.</li>
+        </ul>
+        <div id="s_error"></div>
         <div class="fieldgrid">
           <div><label class="field">Full name</label><input type="text" id="s_name" value="${esc(attemptState.student.name)}"></div>
           <div><label class="field">Roll number</label><input type="text" id="s_roll" value="${esc(attemptState.student.roll)}"></div>
-          <div><label class="field">Class</label><input type="text" id="s_class" value="${esc(attemptState.student.class)}"></div>
+          <div><label class="field">Class</label>
+            <select id="s_class">
+              <option value="">Select class</option>
+              ${CLASS_OPTIONS.map(c=>`<option value="Class ${c}" ${attemptState.student.class==='Class '+c?'selected':''}>Class ${c}</option>`).join('')}
+            </select>
+          </div>
           <div><label class="field">Mobile Number</label><input type="text" id="s_mobile" value="${esc(attemptState.student.mobile)}"></div>
         </div>
-        <button class="btn amber" onclick="submitDetails()">Continue →</button>
+        <button class="btn amber" id="s_continue" onclick="submitDetails()">Continue →</button>
       </div>`;
     return;
   }
@@ -2160,18 +2800,77 @@ function drawAttempt(){
     return;
   }
 }
-function submitDetails(){
-  const mobile = document.getElementById('s_mobile').value.trim();
-  if(sanitizeMobile(mobile).length < 6){
-    alert('Please enter a valid mobile number.');
+function showDetailsError(msg){
+  const el = document.getElementById('s_error');
+  if(el) el.innerHTML = msg ? `<div class="empty" style="padding:12px 14px; margin-bottom:16px; border-color:var(--red-soft);"><p class="small" style="color:var(--red); margin:0;">${esc(msg)}</p></div>` : '';
+}
+/** Validates the typed details against this test's class list (if the
+    teacher has one configured for this test's class) before an attempt or
+    mobile-claim is ever written. firestore.rules independently re-checks
+    the same class-list match at write time (see canCreateAttempt in
+    firestore.rules) — this client-side pass exists only to give a fast,
+    friendly error instead of a raw permission-denied. */
+async function submitDetails(){
+  const mobileRaw = document.getElementById('s_mobile').value.trim();
+  const canonicalMobile = canonicalMobile10(mobileRaw);
+  const name = document.getElementById('s_name').value.trim();
+  const roll = document.getElementById('s_roll').value.trim();
+  const cls = document.getElementById('s_class').value.trim();
+  showDetailsError('');
+
+  if(!canonicalMobile){
+    showDetailsError('Please enter a valid 10-digit mobile number.');
     return;
   }
-  attemptState.student = {
-    name: document.getElementById('s_name').value.trim() || 'Anonymous',
-    roll: document.getElementById('s_roll').value.trim(),
-    class: document.getElementById('s_class').value.trim(),
-    mobile
+  if(!name){
+    showDetailsError('Please enter your full name.');
+    return;
+  }
+
+  let student = {
+    name: name || 'Anonymous', roll, class: cls,
+    mobile: canonicalMobile, normalizedName: normalizeName(name)
   };
+
+  const t = attemptState.test;
+  const assignedClass = (t.meta && t.meta.assignedClass) || '';
+  const btn = document.getElementById('s_continue');
+  if(assignedClass){
+    if(btn){ btn.disabled = true; btn.textContent = 'Checking…'; }
+    try{
+      const rid = rosterIdFor(t.ownerId, assignedClass);
+      const rosterSnap = await dbf.collection('classRosters').doc(rid).get();
+      const rosterActive = rosterSnap.exists && (rosterSnap.data().studentCount||0) > 0;
+      if(rosterActive){
+        const studentSnap = await dbf.collection('classRosters').doc(rid)
+          .collection('students').doc(canonicalMobile).get();
+        const match = studentSnap.exists ? studentSnap.data() : null;
+        const ok = match
+          && match.normalizedName === student.normalizedName
+          && normalizeField(match.class) === normalizeField(assignedClass)
+          && (!match.roll || normalizeField(match.roll) === normalizeField(roll));
+        if(!ok){
+          showDetailsError('Student details not found. Please enter all details correctly.');
+          if(btn){ btn.disabled = false; btn.textContent = 'Continue →'; }
+          return;
+        }
+        // Use the class list's own canonical record so what gets stored
+        // (and what firestore.rules compares against) is byte-for-byte the
+        // same as the registered entry, not whatever capitalization/
+        // spacing the student happened to type.
+        student = {
+          name: match.name, roll: match.roll, class: match.class,
+          mobile: canonicalMobile, normalizedName: match.normalizedName
+        };
+      }
+    }catch(err){
+      showDetailsError("Couldn't verify your details right now — check your connection and try again.");
+      if(btn){ btn.disabled = false; btn.textContent = 'Continue →'; }
+      return;
+    }
+  }
+
+  attemptState.student = student;
   attemptState.phase='instructions';
   drawAttempt();
 }
@@ -2204,7 +2903,10 @@ async function startAttempt(){
   }
 
   el.innerHTML = `<div class="fullload"><span class="spinner"></span>Starting…</div>`;
-  const mobileKey = sanitizeMobile(attemptState.student.mobile);
+  // student.mobile is already the canonical 10-digit value set in
+  // submitDetails() (either what was typed, or — when a class list matched —
+  // the roster's own canonical record), so this is just a defensive re-normalize.
+  const mobileKey = canonicalMobile10(attemptState.student.mobile);
   // Always writes with increment(1) and never reads first: Firestore
   // resolves a missing field as 0, so a first-ever attempt is naturally a
   // "create" landing on count 1, and every attempt after is an "update"
@@ -2277,11 +2979,28 @@ window.addEventListener('online', ()=>{
 window.addEventListener('offline', ()=>{
   if(attemptState && attemptState.phase==='exam') setOfflineState(true);
 });
-/** Push the current answers/marks/tab-switches straight to Firestore, and
-    refresh our clock-offset using Firestore's own serverTimestamp — this
-    is what keeps the visible timer honest without needing a Cloud
-    Function: the value written here is resolved by Firestore's servers,
-    not the browser, so it can't be affected by the device's clock. */
+// Best-effort only — browsers don't guarantee an async write finishes once
+// the page is actually unloading — but this gives a typed-but-not-yet-synced
+// numerical answer a real chance to reach the server instead of silently
+// evaporating if a student closes the tab in the middle of typing it.
+window.addEventListener('beforeunload', ()=>{
+  if(attemptState && attemptState.phase==='exam' && !attemptState.preview && _numDebounce){
+    clearTimeout(_numDebounce);
+    syncProgressSafe();
+  }
+});
+/** Push the current answers/marks/tab-switches straight to Firestore.
+    This intentionally does NOT read the document back afterward — an
+    earlier version did, to recalibrate a "clock offset" for the on-screen
+    timer, but that cost one extra Firestore read on every single answer
+    save and every 30s heartbeat, which is real money against the 50k/day
+    free read quota for a value that was only ever cosmetic: the actual
+    timer *enforcement* happens independently, in firestore.rules, via
+    request.time — the server's own clock — regardless of what this
+    on-screen countdown displays. Removing the read-back can't weaken that
+    enforcement; at worst, a student actively tampering their system clock
+    might briefly see a slightly-off countdown before their next save gets
+    rejected right on schedule anyway. */
 async function syncProgress(){
   if(!attemptState.attemptId || attemptState.preview) return;
   const ref = attemptRef(attemptState.attemptId);
@@ -2290,15 +3009,16 @@ async function syncProgress(){
     tabSwitches: attemptState.tabSwitches, currentIdx: attemptState.currentIdx,
     heartbeatAt: firebase.firestore.FieldValue.serverTimestamp()
   });
-  const snap = await ref.get();
-  const hb = snap.data().heartbeatAt;
-  if(hb && hb.toMillis) attemptState.clockOffset = hb.toMillis() - Date.now();
 }
-// Every answer/nav action calls this. On a genuine connectivity failure it
-// now surfaces a visible banner and keeps retrying (every heartbeat, and
-// immediately on reconnect) instead of silently doing nothing — the risk
-// before was a student losing answers with no indication anything was wrong.
+// Every answer/nav action calls this. Once the exam is no longer active
+// (already submitted, or not started), this is a silent no-op — a stray
+// call firing late (e.g. the numerical-answer debounce below, if it fires
+// just after Submit) must never attempt a write or treat rejection as
+// "time's up", which previously could re-trigger the whole submit flow
+// and show a confusing "Couldn't submit" error to a student who had
+// already successfully finished.
 function syncProgressSafe(){
+  if(attemptState.phase!=='exam') return;
   syncProgress()
     .then(()=> setOfflineState(false))
     .catch(err=>{ if(isDeadlineError(err)) finishExam(true); else setOfflineState(true); });
@@ -2308,9 +3028,11 @@ async function heartbeat(){
   try{ await syncProgress(); setOfflineState(false); }
   catch(err){ if(isDeadlineError(err)) finishExam(true); else setOfflineState(true); }
 }
-/** Remaining time, anchored to the server's clock (via the periodically
-    refreshed clockOffset) rather than the browser's own — so winding the
-    system clock back doesn't make more time appear to be left. */
+/** The on-screen countdown only — purely cosmetic. Actual enforcement of
+    the time limit happens independently in firestore.rules against the
+    server's own clock on every save, so this display being briefly off
+    (e.g. a student who tampered their system clock) can't extend an exam;
+    it can only make what they see locally slightly inaccurate. */
 function remainingMs(){
   const estServerNow = Date.now() + (attemptState.clockOffset||0);
   return attemptState.availableMs - (estServerNow - attemptState.startedAt);
@@ -2422,7 +3144,7 @@ function setNumericalAnswer(qid, value){
   const v = String(value).trim();
   attemptState.answers[qid] = v.length? [v] : [];
   clearTimeout(_numDebounce);
-  _numDebounce = setTimeout(syncProgressSafe, 800);
+  _numDebounce = setTimeout(syncProgressSafe, 500);
   const idx = attemptState.order.indexOf(qid);
   const dot = document.querySelectorAll('.pnode')[idx];
   if(dot){
@@ -2450,6 +3172,13 @@ function confirmSubmit(){
   finishExam(false);
 }
 async function finishExam(auto){
+  // Defense in depth alongside the syncProgressSafe() guard above: once
+  // an attempt is submitted (or already mid-submission), never let a
+  // second trigger — a stray late write, a double-click, the timer and a
+  // manual submit racing — tear down the result screen and start over.
+  if(attemptState.phase==='submitted' || attemptState._submitting) return;
+  attemptState._submitting = true;
+  clearTimeout(_numDebounce); // cancel any pending numerical-answer save; nothing should write after this point
   clearInterval(window._examTimer);
   clearInterval(window._heartbeatTimer);
   document.removeEventListener('visibilitychange', onVisChange);
@@ -2513,6 +3242,7 @@ async function finishExam(auto){
     graded.id = 'preview';
     attemptState.result = graded;
     attemptState.phase = 'submitted';
+    attemptState._submitting = false;
     drawAttempt();
     return;
   }
@@ -2527,6 +3257,7 @@ async function finishExam(auto){
     localStorage.removeItem(attemptState.storageKey); // the attempt is finished; the cached result above takes over for redisplay
     drawAttempt();
   }catch(err){
+    attemptState._submitting = false; // let "Try again" actually retry, instead of being silently blocked by the guard above
     document.getElementById('examshell').innerHTML = `
       <div class="empty"><h3>Couldn't submit</h3>
       <p class="small muted">${esc(err.message)}</p>

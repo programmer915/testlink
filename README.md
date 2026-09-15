@@ -34,6 +34,7 @@ ever embedded in a URL:
 | One-attempt-per-mobile-number locks | `tests/{testId}/mobileClaims/{mobileKey}` |
 | Active & submitted exam attempts (timer, answers, order, score) | `tests/{testId}/attempts/{attemptId}` |
 | Saved/reusable questions | `questionBank/{itemId}`, scoped by `ownerId` |
+| Class lists (one small doc per student, never one big sheet) | `classRosters/{ownerId}__{className}/students/{mobileKey}` |
 
 A "result" isn't a separate thing — it's just an attempt document with
 `status: 'submitted'`. For most tests, the graded fields (score,
@@ -66,26 +67,43 @@ anything useful.
 **Teacher side**
 - Upload a question paper as PDF, a photo/scan, a `.txt` file, or pasted
   text — parsed automatically into questions, options, and answers
+- **AI conversion prompt**: a copiable prompt for pasting your question
+  paper (in any messy layout) into an AI assistant, which reformats it
+  into text this app's parser can extract automatically
 - Mandatory verification screen (✓ Verified / ⚠ Needs Review / ✎ Edited)
   before anything can be published — extraction errors never go live silently
-- Full question editor: text, options, correct answer(s), marks, negative
-  marks, reordering
+- Full question editor: single-choice, multiple-choice, true/false, and
+  numerical (accepted-range) questions, each with text, an optional
+  image, marks, and negative marks
 - **Question Bank**: save any verified question for reuse, and pull saved
   questions into any future test instead of retyping them
 - Test configuration: duration, opens-at, hard deadline, attempts allowed,
   negative marking, question/option randomization, review permissions,
   result visibility, pass percentage
+- **Preview as Student**: walk through the exact exam UI and result
+  screen before publishing — never touches the server, never counts as
+  a real attempt
 - One-click publish → shareable link, live the moment it's published
 - **Question Paper export**: generate the current test as a clean,
   print-ready `.docx` — title, total marks, duration, negative-marking
   rule, and every question with its options in the actual configured
   order, with no answers included
 - **Results dashboard**: per-student scores, tab-switch counts, class
-  average, pass rate, hardest/easiest question, a self-contained CSV
-  export (test name/marks/duration/averages included as a header block,
-  not just the raw rows), and a per-student "View responses" breakdown
-  showing exactly what they answered against the correct answer,
-  question by question
+  average, pass rate, a self-contained CSV export (test name/marks/
+  duration/averages included as a header block, not just the raw rows),
+  and a per-student "View responses" breakdown showing exactly what they
+  answered against the correct answer, question by question
+- **Question-wise analytics**: for every question — attempted/
+  unattempted/correct/wrong counts, accuracy, average marks earned, and
+  a difficulty rating (Easy/Moderate/Hard) derived from actual student
+  performance, with flags for high-wrong-rate and frequently-skipped
+  questions
+- **Unfinished Attempts view**: see who's currently mid-exam versus who
+  started but never finished (derived from each attempt's own time
+  allowance, not a separate stored status), with started-at, elapsed
+  time, last activity, questions answered, and tab switches — plus a
+  Reset action that clears a stuck attempt so the student can restart
+  under the exact same rules a fresh attempt would follow
 - **Remove a wrong or duplicate submission**, or **release a mobile
   number** whose attempt got stuck without finishing — both directly
   from the Results page
@@ -96,25 +114,58 @@ anything useful.
 **Student side**
 - Simple details form (name, class, roll number, mobile number) →
   instructions → timed exam
-- **One attempt per mobile number per test**, enforced server-side —
-  see the Security model section for exactly what this does and doesn't
-  guard against
+- **Class-list validation**: if the test's class has a class list
+  uploaded, the typed name/class/roll/mobile must match a registered
+  student (case/space-insensitive on name) before an attempt or mobile
+  claim is even created — see Classes below and the Security model
+- **Up to the teacher's configured number of attempts per mobile
+  number**, enforced server-side — see the Security model section for
+  exactly what this does and doesn't guard against
 - Question palette, mark-for-review, clear answer, tab-switch tracking,
   auto-submit at zero
 - Refreshing, closing and reopening the link, or reconnecting after a
   dropped connection all resume the same attempt with the exact time
-  remaining — the timer never pauses, resets, or restarts
+  remaining — the timer never pauses, resets, or restarts, and an
+  attempt whose allowance already ran out while the browser was away is
+  auto-submitted the instant it's reopened, not after another tick
+- A visible warning (with automatic retry) if the connection drops
+  mid-exam, instead of silently failing to save an answer
+- Every question clearly labelled by type — Single Choice, Multiple
+  Choice, True/False, or Numerical Answer — right above the question text
 - Result screen shown immediately on submit — score, correct/incorrect/
   unattempted breakdown, and negative-marking deduction shown separately
   when applicable — for "Show immediately"/"Score only" tests. "Hidden"
   tests instead show a plain submission confirmation, since grading for
   those happens later on the teacher's side (see Security model)
 
+**Classes tab**
+- Tests are grouped by their existing "assigned class" field into a
+  dedicated Classes tab, one page per class
+- Each class page shows: registered students, active participants,
+  Submitted / In Progress / Expired-Time-Up / Reset-Invalidated attempt
+  counts, average and highest score, pass percentage, the student who
+  missed the most published tests in that class, the best/most
+  consistent student (highest average score, ties broken by lowest
+  score spread), and a recent-activity feed — all computed from
+  one-time reads, never a live listener left running in the background
+- **Class List**: upload an `.xlsx`/`.xls` sheet (Name | Class | Roll
+  Number | Mobile Number) with a downloadable sample template, a
+  browser-side preview that flags missing fields, invalid/non-10-digit
+  mobiles, duplicate mobiles, and missing roll numbers before anything
+  is imported, and a choice of Merge/Add or Replace. Importing only
+  ever touches that class's roster — it never deletes or resets a test,
+  an attempt, a result, or an attempt counter
+- Registered students are matched to attempts by their **canonical
+  10-digit mobile number**, never by the name text typed into an
+  attempt, so a typo or capitalization difference can't split or merge
+  a student's record
+
 **Core timing rule** (exactly as specified): a student's available time is
 `min(test duration, deadline − their start time)`. Starting late never
 grants extra time beyond the deadline, and no one can start after the
 deadline at all — enforced by Firestore security rules using the
-server's clock, not the student's device.
+server's clock, not the student's device. Reconnecting, refreshing, or
+a teacher opening Results never grants extra time either.
 
 ## Security model
 
@@ -131,14 +182,28 @@ server's clock, not the student's device.
   they already have the ID for; they cannot browse or list other
   students' attempts. Only the owning teacher can list all attempts for
   a test, or delete a wrong/duplicate one from the Results page.
-- **One mobile number = one attempt per test**, enforced atomically by a
-  Firestore rule (a second write to the same claim ID is rejected as an
-  "update", never silently allowed) rather than a query a client could
-  route around. Since there's no SMS/OTP verification, a determined
-  student can still type a fake number — this stops accidental or casual
+- **Each mobile number gets up to the test's own "Allowed attempts per
+  student" limit** (Configure), enforced by an atomically incrementing
+  counter on a Firestore rule — the count can only ever go up by exactly
+  one per write, and never past the configured limit, with no query or
+  Cloud Function needed to check "how many times has this number been
+  used". Since there's no SMS/OTP verification, a determined student can
+  still type a fake number — this stops accidental or casual
   re-attempts, not deliberate dishonesty. If a genuine attempt gets stuck
   (dropped connection, never finished), the teacher's "Release a mobile
-  number" tool on the Results page clears it for a real retry.
+  number" tool on the Results page clears it for a real retry, on top of
+  whatever attempts remained.
+- **Class-list validation**: once a class has a non-empty class list
+  uploaded, both the attempt and its mobile-number claim are rejected —
+  server-side, not just in the entry form — unless the mobile number,
+  case/space-normalized name, class, and (where the roster has one) roll
+  number match that list's registered record for that exact mobile
+  number. A class with no list uploaded yet is left exactly as open as
+  before. Since anyone who already knows a specific mobile number can
+  read that one registered record (the same "must already know the
+  exact key" limit as attempts/mobileClaims above), this narrows
+  accidental or casual impersonation — it doesn't require phone
+  verification and won't stop a determined, informed attacker.
 - **Per-test answer-key handling, tied to the existing "Result
   visibility" setting**:
   - *Show immediately / Score only* — the answer key travels inside the
@@ -171,6 +236,38 @@ no server-side rewrites:
 - **GitHub Pages** — push this folder to a repo, enable Pages in Settings.
 - **Firebase Hosting** — `firebase deploy --only hosting`.
 
+## Staying within Firestore's free tier
+
+This app is built to run indefinitely on Firebase's free Spark plan, so a
+few things exist specifically to keep it there:
+
+- **A live document-size indicator in the test editor.** Every question
+  in a test — including any attached image — lives in one Firestore
+  document, which has a hard 1 MiB cap. The wizard now shows an
+  approximate running size (OK / getting large / critical / over limit)
+  on every step, recalculated on every edit. Saving and publishing are
+  both blocked outright once a test would exceed 1 MiB, with a plain
+  explanation, instead of failing silently or with a confusing server
+  error.
+- **No unnecessary Firestore reads during an exam.** Every answer save
+  and 30-second heartbeat now does exactly one write and zero reads.
+  (An earlier version read the document back after every write, to
+  fine-tune the on-screen timer — that cost a second Firestore
+  operation on every single sync, for a value that was only ever
+  cosmetic display, never actual enforcement.)
+- **The Results page's live listener shuts off the moment you navigate
+  away from it**, instead of continuing to consume reads in the
+  background for every student's heartbeat on a test you're no longer
+  looking at.
+- **Total stored data (the 1 GiB cap)** isn't actively managed by the
+  app — the practical mitigation is the same Delete button already on
+  the Dashboard: periodically removing old tests you no longer need
+  keeps long-term storage bounded. There's no automatic cleanup.
+
+None of this required Cloud Functions or Cloud Storage — both remain
+deliberately out of this build (see the Security model section above for
+why, and what would change if that constraint is ever lifted).
+
 ## Honest limitations, stated plainly
 
 - OCR accuracy on messy scans/handwriting will be rough — that's exactly
@@ -182,6 +279,13 @@ no server-side rewrites:
 - Question Bank items are flat (text/options/marks) — there's no tagging
   or search yet; fine for a small personal bank, not built to scale to
   hundreds of saved questions gracefully yet.
+- **Images live embedded in the test document itself** (as compressed
+  JPEG data), since this build has no separate file storage — there's no
+  extra setup step, but it means a test's total document size (all its
+  questions combined) has to stay under Firestore's 1 MiB-per-document
+  limit. A handful of diagrams per test is comfortably fine; dozens of
+  large images on one test is not. The printable `.docx` question paper
+  does not currently include images — only text and options.
 - **Firestore's free daily write quota (20,000/day) is a real ceiling.**
   Each student writes roughly one "heartbeat" every 30 seconds for as
   long as the exam is open, plus one write per answer change, plus the

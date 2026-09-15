@@ -85,6 +85,12 @@ of this guide).
 5. Refresh the student tab mid-exam next time (before submitting) to
    confirm the timer keeps counting down normally instead of freezing —
    that's the specific bug this architecture was built to fix.
+6. Open the Classes tab, pick a class, click "Download template" under
+   Class List, fill it in, and upload it to see the validation preview.
+   Once a class list has at least one student, the student-entry form for
+   any test assigned to that class will only accept matching registered
+   details — no separate setup step beyond publishing `firestore.rules`
+   in step 4, since the same rules file covers `classRosters` too.
 
 ## An important choice this build gives you, per test
 
