@@ -291,15 +291,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -803,10 +801,9 @@ function render(){
 
   app.innerHTML = `
     <div class="topbar">
-      <div class="brand" onclick="location.hash='#/dashboard'">
-        <span class="mark">T</span>
-        <span class="name">TestLink</span>
-        <span class="tag">&nbsp;· teacher console</span>
+      <div class="brand" onclick="location.hash='#/dashboard'" style="flex-direction:column; align-items:flex-start; gap:0;">
+        <span><span class="mark">T</span><span class="name">TestLink</span></span>
+        <span class="tag">Teacher Console</span>
       </div>
       <div class="topnav">
         <span class="synctag online">● saved to your account</span>
@@ -887,7 +884,8 @@ function viewDashboard(){
   const drafts=tests.filter(t=>t.status==='draft');
   const published=tests.filter(t=>t.status==='published');
   const filteredPublished = dashboardClassFilter==='all' ? published : published.filter(t=>(t.meta.assignedClass||'')===dashboardClassFilter);
-  const totalStudents = Object.values(db.results).reduce((a,r)=>a+r.length,0);
+  const now = Date.now();
+  const activeTests = published.filter(t=>t.config.deadlineAt && t.config.deadlineAt > now).length;
 
   return `
     <div class="dash-head">
@@ -902,7 +900,7 @@ function viewDashboard(){
       <div class="stat"><div class="num">${tests.length}</div><div class="lbl">Total tests</div></div>
       <div class="stat"><div class="num">${published.length}</div><div class="lbl">Published</div></div>
       <div class="stat"><div class="num">${drafts.length}</div><div class="lbl">Drafts</div></div>
-      <div class="stat"><div class="num">${totalStudents}</div><div class="lbl">Submissions recorded</div></div>
+      <div class="stat"><div class="num">${activeTests}</div><div class="lbl">Active tests</div></div>
     </div>
 
     <div class="row" style="justify-content:space-between; align-items:center; margin-top:26px;">
@@ -930,7 +928,7 @@ function testRow(t,db){
     <div class="test-row">
       <div class="ti">
         <h4>${esc(t.meta.name)}</h4>
-        <div class="meta">${t.questions.length} questions · ${n} submission${n===1?'':'s'} · created ${new Date(t.createdAt).toLocaleDateString()}
+        <div class="meta">${t.questions.length} questions · ${n} submission${n===1?'':'s'} · created ${new Date(t.createdAt).toLocaleDateString()} · deadline ${fmtDateTime(t.config.deadlineAt)}
           <span class="badge ${t.status==='published'?'published':'draft'}" style="margin-left:8px;">${t.status}</span>
           ${t.meta.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(t.meta.assignedClass)}</span>` : ''}
         </div>
@@ -938,8 +936,6 @@ function testRow(t,db){
       <div class="ta">
         <button class="btn secondary small" onclick="location.hash='#/edit/${t.id}'">Open</button>
         <button class="btn secondary small" onclick="location.hash='#/results/${t.id}'">Results</button>
-        <button class="btn ghost small" onclick="location.hash='#/preview/${t.id}'">Preview as Student</button>
-        <button class="btn ghost small" onclick="exportQuestionPaperDocx('${t.id}')">Question Paper (.docx)</button>
         <button class="btn ghost small" onclick="dupTest('${t.id}')">Duplicate</button>
         <button class="btn danger small" onclick="removeTest('${t.id}')">Delete</button>
       </div>
@@ -1539,39 +1535,67 @@ function persistDraft(){
 }
 
 /* ---- Step 1: Upload ---- */
-const AI_CONVERSION_PROMPT = `I have a question paper that needs converting into a specific plain-text format so I can upload it to a quiz tool. Please reformat the question paper I paste below (or attach) into exactly this layout, question by question.
+const AI_CONVERSION_PROMPT = `I will provide a question paper as pasted text, an image, or an attached file. Convert it into a standardized plain-text format that I can upload to my quiz tool.
 
-IMPORTANT — output format: put your entire answer inside a single fenced code block (triple backticks), with nothing before or after it, and do not use any markdown formatting (no bold, no bullet points, no auto-numbered lists) inside it. This matters because outside a code block, chat interfaces often collapse single line breaks and squash multiple options onto one line — a code block is what keeps every option on its own separate line.
+The input may contain questions from any subject, with different layouts, numbering styles, mathematical notation, tables, diagrams, or answer formats. Read and understand the entire paper before converting it.
 
-For a multiple-choice or true/false question, use lettered options and a letter answer, each on its own line:
-1. <question text>
-A) <option A>
-B) <option B>
-C) <option C>
-D) <option D>
-Answer: <correct option letter>
+### Output format
 
-For a true/false question specifically, use exactly two options worded as True and False:
-2. <question text>
-A) True
-B) False
-Answer: <A or B>
+Output ONLY the reformatted questions. Do not include headers, page numbers, explanations, commentary, or Markdown code fences.
 
-For a question that expects a typed numeric answer (not multiple choice), skip the lettered options entirely and give the accepted answer as a number or a range right after the question:
-3. <question text>
-Answer: <exact number>
+**Multiple-choice questions (MCQ):**
 
-4. <question text>
-Answer: <minimum number>-<maximum number>
+1. A)
 
-Rules:
-- Number every question sequentially starting at 1, followed by a period and a space (e.g. "1. ").
-- Give each option a single capital letter followed by a closing parenthesis and a space (e.g. "A) ").
-- Each option MUST be on its own separate line — never place two or more options on the same line, and never separate them with commas or slashes instead of a line break.
-- Include an "Answer:" line right after each question (after its options, if it has any), on its own line. If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
-- Only use the numeric "Answer: min-max" or "Answer: number" format for questions that genuinely expect a typed numeric answer, not multiple choice — never mix lettered options with a numeric answer line on the same question.
-- Output ONLY the reformatted questions in the format above, inside the single code block described above — no headers, page numbers, explanations, or commentary, and nothing outside that code block.
-- Keep the original question text and options exactly as written; only reformat the layout and numbering.
+   B)
+
+   C)
+
+   D)
+
+   Answer:
+
+**True/False questions:**
+
+2. A) True
+
+   B) False
+
+   Answer:
+
+**Typed numeric-answer questions:**
+
+3. Answer:
+
+### Conversion rules
+
+1. Number every question sequentially, starting from 1, using the format \`1. \`, \`2. \`, etc. Ignore the original question numbering.
+2. Preserve the original question text and options exactly in wording, meaning, and order. Do not rewrite, shorten, paraphrase, or add information.
+3. Preserve all relevant mathematical and scientific notation, including equations, symbols, subscripts, superscripts, fractions, units, chemical formulas, and punctuation. Convert visual formatting into readable plain text when necessary, without changing the meaning.
+4. Identify the question type from the input:
+   - For MCQs, retain all provided options and use capital letters A), B), C), etc., in their original order. Do not assume there are exactly four options; retain the actual number of options.
+   - For True/False questions, use exactly two options: A) True and B) False.
+   - For questions requiring a typed numeric answer, omit lettered options and provide the accepted answer as a number or range.
+5. Determine the correct answer using the question and any answer key provided in the input. If no answer key is provided, solve the question when possible. If the correct answer cannot be determined reliably, leave the answer blank as \`Answer: \`.
+6. For numerical-answer questions, use the exact number or an accepted minimum-maximum range. Do not convert an MCQ into a numeric-answer question merely because its correct option contains a number.
+7. Use exactly three spaces before every option and every Answer line.
+8. Leave one blank line between consecutive options.
+9. Do not leave a blank line between the Answer line of one question and the next question number.
+10. Do not add extra blank lines at the beginning or end of the output.
+11. If the input contains diagrams, images, tables, or formatting that is essential to understanding a question, represent the necessary information in plain text while preserving its meaning.
+12. Do not invent missing questions, options, answers, or text.
+
+### Final validation
+
+Before outputting, verify that:
+
+- Every question is included exactly once.
+- Question numbering is sequential.
+- Every question has an Answer line.
+- MCQs have lettered options and a letter answer.
+- True/False questions have exactly two options.
+- Numeric-answer questions have no lettered options.
+- The output contains nothing except the converted questions.
 
 Here is the question paper to convert:
 [PASTE YOUR QUESTION PAPER TEXT OR ATTACH THE FILE HERE]`;
@@ -1742,31 +1766,43 @@ function runExtraction(){
   render();
   toast(`${extracted.length} question(s) extracted — please verify each one`);
 }
+/** Used by the three "add manually" entry points below: creates the new
+    question, then opens the same editor modal used for editing an
+    existing question — directly, in the same click — instead of dropping
+    a blank template into the list and leaving the teacher to scroll down
+    and find it. Cancelling this modal removes the just-added question
+    again, since nothing was actually filled in yet. */
 function addBlankQuestion(){
-  wizardDraft.questions.push({
-    id: uid('q'), text:'New question text', type:'single',
-    options:[{id:'o0',text:'Option A'},{id:'o1',text:'Option B'},{id:'o2',text:'Option C'},{id:'o3',text:'Option D'}],
+  const q = {
+    id: uid('q'), text:'', type:'single',
+    options:[{id:'o0',text:''},{id:'o1',text:''},{id:'o2',text:''},{id:'o3',text:''}],
     correct:[], numericMin:null, numericMax:null, image:null,
     marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  });
+  };
+  wizardDraft.questions.push(q);
   persistDraft(); wizardStep='verify'; render();
+  openEditModal(q.id, true);
 }
 function addBlankTrueFalse(){
-  wizardDraft.questions.push({
-    id: uid('q'), text:'New true/false question', type:'truefalse',
+  const q = {
+    id: uid('q'), text:'', type:'truefalse',
     options:[{id:'o0',text:'True'},{id:'o1',text:'False'}],
     correct:[], numericMin:null, numericMax:null, image:null,
     marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  });
+  };
+  wizardDraft.questions.push(q);
   persistDraft(); wizardStep='verify'; render();
+  openEditModal(q.id, true);
 }
 function addBlankNumerical(){
-  wizardDraft.questions.push({
-    id: uid('q'), text:'New numerical question', type:'numerical',
+  const q = {
+    id: uid('q'), text:'', type:'numerical',
     options:[], correct:[], numericMin:0, numericMax:0, image:null,
     marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  });
+  };
+  wizardDraft.questions.push(q);
   persistDraft(); wizardStep='verify'; render();
+  openEditModal(q.id, true);
 }
 function openBankPicker(){
   const bank = getDB().bank || [];
@@ -1972,7 +2008,7 @@ function onModalTypeChange(newType){
   }
   document.getElementById('mq_typebody').innerHTML = renderModalTypeBody(newType);
 }
-function openEditModal(id){
+function openEditModal(id, isNew){
   const q=findQ(id);
   window._modalType = q.type || 'single';
   window._modalOptions = (q.options||[]).map(o=>({...o}));
@@ -1985,7 +2021,7 @@ function openEditModal(id){
   modal.className='modalbg';
   modal.innerHTML=`
     <div class="modal">
-      <h3 style="margin-bottom:14px;">Edit question</h3>
+      <h3 style="margin-bottom:14px;">${isNew? 'Add question' : 'Edit question'}</h3>
       <label class="field">Question type</label>
       <select id="mq_type" onchange="onModalTypeChange(this.value)">
         <option value="single" ${window._modalType==='single'?'selected':''}>Single Choice</option>
@@ -1995,7 +2031,7 @@ function openEditModal(id){
       </select>
       <div class="hr"></div>
       <label class="field">Question text</label>
-      <textarea id="mq_text" rows="3" style="font-family:Inter,sans-serif;">${esc(q.text)}</textarea>
+      <textarea id="mq_text" rows="3" style="font-family:Inter,sans-serif;" placeholder="Type the question text…">${esc(q.text)}</textarea>
       <div class="hr"></div>
       <label class="field">Image (optional)</label>
       <div id="mq_imagePreview"></div>
@@ -2008,13 +2044,25 @@ function openEditModal(id){
         <div><label class="field">Negative marks (if wrong)</label><input type="number" id="mq_neg" value="${q.negativeMarks}" min="0" step="0.25"></div>
       </div>
       <div class="row" style="justify-content:flex-end; margin-top:10px;">
-        <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Cancel</button>
+        <button class="btn secondary" onclick="cancelModal('${q.id}', ${isNew?'true':'false'})">Cancel</button>
         <button class="btn amber" onclick="saveModal('${q.id}')">Save changes</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('mq_typebody').innerHTML = renderModalTypeBody(window._modalType);
   renderModalImagePreview();
+}
+/** Cancelling a freshly-added ("+ Add a question manually") question
+    removes it again — it was never confirmed, so nothing should be left
+    behind in the list for the teacher to notice and clean up later.
+    Cancelling while editing an already-existing question just closes the
+    modal, unchanged, exactly as before. */
+function cancelModal(qid, isNew){
+  document.querySelector('.modalbg').remove();
+  if(isNew){
+    wizardDraft.questions = wizardDraft.questions.filter(q=>q.id!==qid);
+    persistDraft(); render();
+  }
 }
 function setModalCorrect(oid){
   if(window._modalType==='multiple'){
@@ -2339,7 +2387,7 @@ function renderUnfinishedSection(testId){
     ${filtered.length===0? `<div class="empty card"><p>No matching attempts.</p></div>` : `
     <div class="card pad" style="overflow:auto;">
       <table class="results">
-        <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Started At</th><th>Time Elapsed</th><th>Last Activity</th><th>Answered</th><th>Tab switches</th><th>Status</th><th></th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Started At</th><th>Time Elapsed</th><th>Last Activity</th><th>Answered</th><th>Tab switches</th><th>Status</th><th></th><th></th><th></th></tr></thead>
         <tbody>
           ${filtered.map(a=>{
             const answered = Object.keys(a.answers||{}).length;
@@ -2359,6 +2407,7 @@ function renderUnfinishedSection(testId){
               <td><span class="badge ${badgeClass}">${a._status}</span></td>
               <td><button class="btn ghost small" onclick="openProgressModal('${testId}','${a.id}')">View Progress</button></td>
               <td>${canReset? `<button class="btn danger small" onclick="resetAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Reset</button>` : ''}</td>
+              <td><button class="btn danger small" onclick="deleteAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Delete</button></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -2403,6 +2452,18 @@ async function resetAttempt(testId, attemptId, mobileKey){
     if(mobileKey) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(mobileKey).delete().catch(()=>{});
     toast('Attempt reset — the old record is kept, and they can attempt again');
   }catch(err){ toast('Could not reset: '+err.message); }
+}
+/** Unlike Reset, this permanently removes the attempt document itself —
+    for clearing out old In Progress/Expired/Reset clutter you don't need
+    to keep. Also releases the mobile-number claim (same as Reset) so the
+    slot isn't stuck "used" by a deleted attempt. This cannot be undone. */
+async function deleteAttempt(testId, attemptId, mobileKey){
+  if(!confirm('Permanently delete this attempt? This cannot be undone — the record (answers, timestamps) will be gone for good, and the mobile-number slot it used will be freed.')) return;
+  try{
+    await dbf.collection('tests').doc(testId).collection('attempts').doc(attemptId).delete();
+    if(mobileKey) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(mobileKey).delete().catch(()=>{});
+    toast('Attempt deleted');
+  }catch(err){ toast('Could not delete: '+err.message); }
 }
 function openResponseModal(testId, resultId){
   const test = getDB().tests[testId];
