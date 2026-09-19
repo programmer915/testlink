@@ -267,6 +267,7 @@ function fmtTime(ms){
   return (h>0?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
 }
 function fmtDateTime(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}); }
+function fmtDate(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleDateString([], {dateStyle:'medium'}); }
 function fmtDateTimeExact(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'medium'}); }
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function toast(msg){
@@ -302,15 +303,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -947,19 +946,23 @@ function setDashboardClassFilter(v){ dashboardClassFilter=v; render(); }
     (populated by subscribeResults()) is the richer, authoritative source
     once a teacher has actually opened that test's Results page this
     session — used as-is when present. Every other published test gets a
-    one-time Firestore COUNT aggregation query instead of a full listener:
-    it costs a single read regardless of how many attempts exist, so every
-    test card can show a real number without opening a listener per test
-    and without waiting for the teacher to click into Results first. */
+    one-time fetch of its attempts collection, counted client-side —
+    the same proven approach the Classes page already uses reliably
+    (a .count() aggregation query was tried first here but proved
+    unreliable — it could silently stall on a flaky connection instead of
+    resolving or failing cleanly). Read cost stays trivial at classroom
+    scale, and there's no permanently-open listener. */
 let submissionCounts = {};        // testId -> count
 let submissionCountsLoading = new Set();
 async function loadSubmissionCount(testId){
   if(submissionCountsLoading.has(testId)) return;
   submissionCountsLoading.add(testId);
   try{
-    const snap = await dbf.collection('tests').doc(testId).collection('attempts')
-      .where('status','==','submitted').count().get();
-    submissionCounts[testId] = snap.data().count;
+    const fetchPromise = dbf.collection('tests').doc(testId).collection('attempts')
+      .where('status','==','submitted').get();
+    const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error('timed out')), 15000));
+    const snap = await Promise.race([fetchPromise, timeout]);
+    submissionCounts[testId] = snap.size;
   }catch(err){
     submissionCounts[testId] = 0; // opening Results (or a manual retry) will correct this if it was transient
   }
@@ -983,11 +986,13 @@ function testRow(t,db){
   return `
     <div class="test-row">
       <div class="ti">
-        <h4>${esc(t.meta.name)}</h4>
-        <div class="meta">${t.questions.length} questions · ${subLabel} · created ${new Date(t.createdAt).toLocaleDateString()} · deadline ${fmtDateTime(t.config.deadlineAt)}
-          <span class="badge ${t.status==='published'?'published':'draft'}" style="margin-left:8px;">${t.status}</span>
-          ${t.meta.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(t.meta.assignedClass)}</span>` : ''}
+        <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap;">
+          <h4>${esc(t.meta.name)}</h4>
+          <span class="badge ${t.status==='published'?'published':'draft'}">${t.status}</span>
+          ${t.meta.assignedClass? `<span class="badge edited">${esc(t.meta.assignedClass)}</span>` : ''}
         </div>
+        <div class="meta">${t.questions.length} question${t.questions.length===1?'':'s'} · ${subLabel}</div>
+        <div class="meta">Created ${fmtDate(t.createdAt)} · Deadline ${fmtDateTime(t.config.deadlineAt)}</div>
       </div>
       <div class="ta">
         <button class="btn secondary small" onclick="location.hash='#/edit/${t.id}'">Open</button>
@@ -1002,6 +1007,13 @@ function wireDashboardEvents(){
     const db=getDB(); const src=db.tests[id]; if(!src) return;
     const copy=JSON.parse(JSON.stringify(src));
     copy.id=uid('t'); copy.status='draft'; copy.createdAt=Date.now(); copy.meta.name=src.meta.name+' (copy)';
+    // The deep clone above also copies the SOURCE test's slug — left as-is,
+    // publishing the copy would reuse that exact slug (publishTest() only
+    // ever generates a new one when the field is empty), so the shared
+    // link would match BOTH tests and a student's browser could resolve to
+    // either one. Clearing it here guarantees the copy gets its own fresh,
+    // unique link the next time it's published.
+    copy.slug = null;
     saveTest(copy); toast('Duplicated'); render();
   };
   window.removeTest = (id)=>{
