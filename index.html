@@ -303,15 +303,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -2386,7 +2384,7 @@ function viewResults(testId){
       <strong class="small">Submissions</strong>
       <div class="row" style="gap:8px;">
         <button class="btn secondary small" onclick="promptReleaseMobile('${testId}')">Release a mobile number</button>
-        <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportResultsDocx('${testId}')">Download Results (.docx)</button>
+        <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportResultsXlsx('${testId}')">Download Results (.xlsx)</button>
       </div>
     </div>
     <p class="small muted" style="margin-top:-4px; margin-bottom:14px;">A mobile number is locked to one attempt per test. If a student's attempt got stuck (e.g. they never finished), release their number here so they can try again.</p>
@@ -2657,96 +2655,74 @@ async function exportQuestionPaperDocx(testId){
     toast('Could not generate document: '+err.message);
   }
 }
-/** Builds a formatted Word results report: a title, a shaded "Summary"
-    table of test/class-level stats kept visually separate from the
-    per-student table below it (was previously a flat CSV with a plain
-    text header block — replaced per feedback that it should read like an
-    actual report, not a raw data dump). Each student row gets a serial
-    number and its time shown as mm:ss rather than raw seconds; there's no
-    "exported on" line, since that timestamp added no value to the report
-    itself. */
-function buildResultsReportDoc(test, results){
-  const { Document, Paragraph, TextRun, HeadingLevel, AlignmentType,
-          Table, TableRow, TableCell, WidthType, BorderStyle } = docx;
+/** Builds a results spreadsheet: a title, a "Summary" section of
+    test/class-level stats, a blank row, then a "Student Results" section
+    with its own proper header row — kept visually separate purely
+    through structure (section headers merged across the full row width,
+    blank-row spacing) since the free SheetJS build used here can't write
+    real cell colors/fonts into .xlsx. Each row gets a serial number and
+    its time shown as mm:ss rather than raw seconds; there's no "exported
+    on" line, since that timestamp added no value to the file itself. */
+function buildResultsXlsxWorkbook(test, results){
   const n = results.length;
   const totalMarks = test.questions.reduce((a,q)=>a+q.marks,0);
   const avgPct = n? (results.reduce((a,r)=>a+r.percentage,0)/n) : 0;
   const passCount = results.filter(r=>r.percentage>=test.config.passPercent).length;
   const passPct = n? (passCount/n*100) : 0;
+  const COLS = 10;
 
-  const thinBorder = { style: BorderStyle.SINGLE, size:2, color:'D9D2C0' };
-  const borders = { top:thinBorder, bottom:thinBorder, left:thinBorder, right:thinBorder };
-  const cell = (text, opts={}) => new TableCell({
-    borders,
-    width: opts.width? { size:opts.width, type:WidthType.PERCENTAGE } : undefined,
-    shading: opts.shade? { fill:opts.shade } : undefined,
-    margins:{ top:80, bottom:80, left:120, right:120 },
-    children:[ new Paragraph({ children:[ new TextRun({ text:String(text), bold:!!opts.bold, size: opts.size||20 }) ] }) ]
-  });
+  const rows = [];
+  const merges = [];
+  const addSectionRow = (text) => {
+    rows.push([text]);
+    merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:COLS-1} });
+  };
 
-  const children = [];
-  children.push(new Paragraph({ text: test.meta.name, heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }));
-  children.push(new Paragraph({
-    alignment: AlignmentType.CENTER, spacing:{ after: 340 },
-    children:[ new TextRun({ text:'Results Report', italics:true, size:22, color:'8A7F68' }) ]
-  }));
-
-  children.push(new Paragraph({ text:'Summary', heading: HeadingLevel.HEADING_2, spacing:{ after: 140 } }));
-  const summaryRows = [
-    ['Total Questions', String(test.questions.length)],
-    ['Total Marks', String(totalMarks)],
-    ['Duration', `${test.config.duration} minutes`],
-    ['Pass Percentage', `${test.config.passPercent}%`],
-    ['Negative Marking', test.config.negativeMarking? `Yes (\u2212${test.config.negativeValue} per wrong answer)` : 'No'],
-    ['Number of Submissions', String(n)],
-    ['Class Average', n? `${avgPct.toFixed(1)}%` : '\u2014'],
-    ['Pass Rate', n? `${passPct.toFixed(0)}%` : '\u2014']
-  ];
-  children.push(new Table({
-    width:{ size:100, type:WidthType.PERCENTAGE },
-    rows: summaryRows.map(([label,value])=> new TableRow({
-      children:[ cell(label,{bold:true, shade:'F3EFE4', width:40}), cell(value,{width:60}) ]
-    }))
-  }));
-
-  children.push(new Paragraph({ text:'Student Results', heading: HeadingLevel.HEADING_2, spacing:{ before: 360, after: 140 } }));
+  addSectionRow(test.meta.name);
+  addSectionRow('Results Report');
+  rows.push([]);
+  addSectionRow('Summary');
+  rows.push(['Total Questions', test.questions.length]);
+  rows.push(['Total Marks', totalMarks]);
+  rows.push(['Duration (minutes)', test.config.duration]);
+  rows.push(['Pass Percentage', test.config.passPercent+'%']);
+  rows.push(['Negative Marking', test.config.negativeMarking? `Yes (-${test.config.negativeValue} per wrong answer)` : 'No']);
+  rows.push(['Number of Submissions', n]);
+  rows.push(['Class Average', n? avgPct.toFixed(1)+'%' : '\u2014']);
+  rows.push(['Pass Rate', n? passPct.toFixed(0)+'%' : '\u2014']);
+  rows.push([]);
+  addSectionRow('Student Results');
+  rows.push(['S.No.','Name','Class','Roll No.','Mobile Number','Score','%','Tab Switches','Time Taken','Status']);
   if(n===0){
-    children.push(new Paragraph({ children:[ new TextRun({ text:'No submissions yet.', italics:true }) ] }));
+    rows.push(['No submissions yet.']);
   } else {
-    const headerRow = new TableRow({ tableHeader:true, children:[
-      cell('S.No.',{bold:true, shade:'F3EFE4'}), cell('Name',{bold:true, shade:'F3EFE4'}),
-      cell('Class',{bold:true, shade:'F3EFE4'}), cell('Roll No.',{bold:true, shade:'F3EFE4'}),
-      cell('Mobile Number',{bold:true, shade:'F3EFE4'}), cell('Score',{bold:true, shade:'F3EFE4'}),
-      cell('%',{bold:true, shade:'F3EFE4'}), cell('Tab Switches',{bold:true, shade:'F3EFE4'}),
-      cell('Time Taken',{bold:true, shade:'F3EFE4'}), cell('Status',{bold:true, shade:'F3EFE4'})
-    ]});
-    const dataRows = results.map((r,i)=> new TableRow({ children:[
-      cell(i+1), cell(r.student.name||''), cell(r.student.class||''), cell(r.student.roll||''),
-      cell(r.student.mobile||''), cell(`${r.score} / ${r.maxScore}`), cell(`${r.percentage.toFixed(1)}%`),
-      cell(r.tabSwitches), cell(fmtTime(r.timeTakenMs)),
-      cell(r.percentage>=test.config.passPercent?'PASS':'FAIL', {bold:true})
-    ]}));
-    children.push(new Table({ width:{ size:100, type:WidthType.PERCENTAGE }, rows:[headerRow, ...dataRows] }));
+    results.forEach((r,i)=>{
+      rows.push([
+        i+1, r.student.name||'', r.student.class||'', r.student.roll||'', r.student.mobile||'',
+        `${r.score} / ${r.maxScore}`, `${r.percentage.toFixed(1)}%`, r.tabSwitches, fmtTime(r.timeTakenMs),
+        r.percentage>=test.config.passPercent? 'PASS':'FAIL'
+      ]);
+    });
   }
 
-  return new Document({ sections:[{ properties:{}, children }] });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:24},{wch:22},{wch:10},{wch:12},{wch:14},{wch:10},{wch:8},{wch:13},{wch:12},{wch:8}];
+  ws['!merges'] = merges;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Results');
+  return wb;
 }
-async function exportResultsDocx(testId){
+function exportResultsXlsx(testId){
   const db = getDB();
   const test = db.tests[testId];
   if(!test){ toast('Test not found'); return; }
-  if(typeof docx === 'undefined'){ toast('Document library failed to load — check your internet connection'); return; }
+  if(typeof XLSX === 'undefined'){ toast('Spreadsheet library failed to load — check your internet connection'); return; }
   const results = (db.results[testId]||[]).slice().sort((a,b)=>b.percentage-a.percentage);
-  toast('Generating report…');
   try{
-    const doc = buildResultsReportDoc(test, results);
-    const blob = await docx.Packer.toBlob(doc);
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download = `${test.meta.name.replace(/[^a-z0-9]+/gi,'_')}_results.docx`;
-    a.click();
+    const wb = buildResultsXlsxWorkbook(test, results);
+    XLSX.writeFile(wb, `${test.meta.name.replace(/[^a-z0-9]+/gi,'_')}_results.xlsx`);
   }catch(err){
-    toast('Could not generate report: '+err.message);
+    toast('Could not generate spreadsheet: '+err.message);
   }
 }
 /** Deletes a submitted attempt entirely and releases its mobile-number
