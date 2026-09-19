@@ -51,7 +51,7 @@ button{font-family:'Inter',sans-serif;}
 .topbar{
   display:flex; align-items:center; justify-content:space-between;
   padding:16px 28px; border-bottom:1px solid var(--border);
-  background:var(--paper);
+  background:var(--paper); position:relative; /* anchors the mobile dropdown nav below it */
 }
 .brand{display:flex; align-items:baseline; gap:8px; cursor:pointer;}
 .brand .mark{
@@ -61,6 +61,7 @@ button{font-family:'Inter',sans-serif;}
 }
 .brand .name{font-family:'Source Serif 4',serif; font-weight:700; font-size:19px; letter-spacing:.2px;}
 .brand .tag{color:var(--muted); font-size:12.5px;}
+.navtoggle{display:none; background:none; border:1px solid var(--border); border-radius:4px; padding:7px 12px; font-size:16px; cursor:pointer; color:var(--ink);}
 .topnav{display:flex; gap:22px; font-size:13.5px; color:var(--ink-soft);}
 .topnav span{cursor:pointer; padding-bottom:3px; border-bottom:2px solid transparent;}
 .topnav span.active{border-bottom-color:var(--amber); color:var(--ink); font-weight:600;}
@@ -229,7 +230,17 @@ table.results tr:hover td{background:#FBF9F4;}
   .fieldgrid{grid-template-columns:1fr;}
   .stat-row{grid-template-columns:repeat(2,1fr);}
   .resultgrid{grid-template-columns:1fr 1fr;}
+  .navtoggle{display:inline-flex;}
   .topnav{display:none;}
+  .topnav.open{
+    display:flex; flex-direction:column; align-items:flex-start; gap:14px;
+    position:absolute; top:100%; left:0; right:0; background:var(--paper);
+    border-bottom:1px solid var(--border); padding:16px 20px; z-index:50;
+    box-shadow:0 8px 16px rgba(27,36,48,.08);
+  }
+  .dash-head{flex-direction:column; align-items:flex-start; gap:14px;}
+  .test-row{flex-direction:column; align-items:flex-start; gap:12px;}
+  .test-row .ta{flex-wrap:wrap; width:100%;}
 }
 </style>
 </head>
@@ -291,15 +302,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -811,13 +820,14 @@ function render(){
         <span><span class="mark">T</span><span class="name">TestLink</span></span>
         <span class="tag">Teacher Console</span>
       </div>
-      <div class="topnav">
+      <button class="navtoggle" onclick="toggleMobileNav()" aria-label="Menu">${mobileNavOpen? '✕' : '☰'}</button>
+      <div class="topnav ${mobileNavOpen?'open':''}">
         <span class="synctag online">● saved to your account</span>
-        <span class="${route==='dashboard'?'active':''}" onclick="location.hash='#/dashboard'">Dashboard</span>
-        <span class="${route==='create'?'active':''}" onclick="startNewTest()">Create Test</span>
-        <span class="${route==='bank'?'active':''}" onclick="location.hash='#/bank'">Question Bank</span>
-        <span class="${route==='classes'?'active':''}" onclick="location.hash='#/classes'">Classes</span>
-        <span onclick="doLogout()">Sign out (${esc(currentUser.email)})</span>
+        <span class="${route==='dashboard'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/dashboard'">Dashboard</span>
+        <span class="${route==='create'?'active':''}" onclick="mobileNavOpen=false; startNewTest()">Create Test</span>
+        <span class="${route==='bank'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/bank'">Question Bank</span>
+        <span class="${route==='classes'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/classes'">Classes</span>
+        <span onclick="mobileNavOpen=false; doLogout()">Sign out (${esc(currentUser.email)})</span>
       </div>
     </div>
     <div class="shell wide">${body}</div>
@@ -825,6 +835,8 @@ function render(){
   wireDashboardEvents();
   if(route==='create') afterWizardRender();
 }
+let mobileNavOpen = false;
+function toggleMobileNav(){ mobileNavOpen = !mobileNavOpen; render(); }
 window.addEventListener('hashchange', render);
 window.addEventListener('DOMContentLoaded', render);
 
