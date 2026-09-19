@@ -291,15 +291,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -560,7 +558,7 @@ function subscribeBank(){
       if(location.hash==='#/bank') render();
     }, err=>toast('Sync error: '+err.message));
 }
-function addToBank(q){
+function addToBank(q, className){
   if(!q) return;
   if(q.bankId){ toast('Already saved to your bank'); return; } // guards against accidental duplicate saves
   const item = {
@@ -568,7 +566,8 @@ function addToBank(q){
     text: q.text, type: q.type||'single', options: q.options, correct: q.correct,
     numericMin: q.numericMin!=null? q.numericMin : null, numericMax: q.numericMax!=null? q.numericMax : null,
     image: q.image || null,
-    marks: q.marks, negativeMarks: q.negativeMarks, createdAt: Date.now()
+    marks: q.marks, negativeMarks: q.negativeMarks, createdAt: Date.now(),
+    assignedClass: className || '' // tags the saved question with the class it was written for
   };
   dbf.collection('questionBank').add(item)
     .then(ref=>{
@@ -581,6 +580,9 @@ function addToBank(q){
       toast('Saved to your question bank');
     })
     .catch(err=>toast('Could not save: '+err.message));
+}
+function setBankItemClass(id, cls){
+  dbf.collection('questionBank').doc(id).update({assignedClass: cls}).catch(err=>toast('Could not update: '+err.message));
 }
 function deleteBankItem(id){
   if(!confirm('Remove this question from your bank?')) return;
@@ -924,13 +926,49 @@ function viewDashboard(){
 }
 let dashboardClassFilter = 'all';
 function setDashboardClassFilter(v){ dashboardClassFilter=v; render(); }
+
+/** Live-accurate submission counts for the test cards. db.results[testId]
+    (populated by subscribeResults()) is the richer, authoritative source
+    once a teacher has actually opened that test's Results page this
+    session — used as-is when present. Every other published test gets a
+    one-time Firestore COUNT aggregation query instead of a full listener:
+    it costs a single read regardless of how many attempts exist, so every
+    test card can show a real number without opening a listener per test
+    and without waiting for the teacher to click into Results first. */
+let submissionCounts = {};        // testId -> count
+let submissionCountsLoading = new Set();
+async function loadSubmissionCount(testId){
+  if(submissionCountsLoading.has(testId)) return;
+  submissionCountsLoading.add(testId);
+  try{
+    const snap = await dbf.collection('tests').doc(testId).collection('attempts')
+      .where('status','==','submitted').count().get();
+    submissionCounts[testId] = snap.data().count;
+  }catch(err){
+    submissionCounts[testId] = 0; // opening Results (or a manual retry) will correct this if it was transient
+  }
+  submissionCountsLoading.delete(testId);
+  render();
+}
 function testRow(t,db){
-  const n = (db.results[t.id]||[]).length;
+  let n, subLabel;
+  if(db.results[t.id] !== undefined){
+    n = db.results[t.id].length;
+    subLabel = `${n} submission${n===1?'':'s'}`;
+  } else if(t.status!=='published'){
+    subLabel = '0 submissions'; // a draft has never been open to attempts
+  } else if(submissionCounts[t.id] !== undefined){
+    n = submissionCounts[t.id];
+    subLabel = `${n} submission${n===1?'':'s'}`;
+  } else {
+    subLabel = 'counting submissions…';
+    loadSubmissionCount(t.id);
+  }
   return `
     <div class="test-row">
       <div class="ti">
         <h4>${esc(t.meta.name)}</h4>
-        <div class="meta">${t.questions.length} questions · ${n} submission${n===1?'':'s'} · created ${new Date(t.createdAt).toLocaleDateString()} · deadline ${fmtDateTime(t.config.deadlineAt)}
+        <div class="meta">${t.questions.length} questions · ${subLabel} · created ${new Date(t.createdAt).toLocaleDateString()} · deadline ${fmtDateTime(t.config.deadlineAt)}
           <span class="badge ${t.status==='published'?'published':'draft'}" style="margin-left:8px;">${t.status}</span>
           ${t.meta.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(t.meta.assignedClass)}</span>` : ''}
         </div>
@@ -1000,6 +1038,7 @@ function viewClasses(){
   const rows = CLASS_OPTIONS.map(c=>{
     const cn = 'Class '+c;
     const classTests = tests.filter(t=>(t.meta.assignedClass||'')===cn);
+    if(classTests.length===0) return null; // only show classes that actually have a test assigned
     const published = classTests.filter(t=>t.status==='published').length;
     const reg = (classesIndex[cn]||{}).studentCount || 0;
     return `
@@ -1012,7 +1051,7 @@ function viewClasses(){
           <button class="btn secondary small" onclick="location.hash='#/classes/${encodeURIComponent(cn)}'">Open →</button>
         </div>
       </div>`;
-  }).join('');
+  }).filter(Boolean).join('');
   const unassigned = tests.filter(t=>!(t.meta.assignedClass||'')).length;
   return `
     <div class="dash-head">
@@ -1022,7 +1061,7 @@ function viewClasses(){
       </div>
       <button class="btn secondary" onclick="refreshClassesIndex()">Refresh counts</button>
     </div>
-    <div class="test-list" style="margin-top:18px;">${rows}</div>
+    <div class="test-list" style="margin-top:18px;">${rows || `<div class="empty card"><h3>No classes yet</h3><p>A class appears here once you assign it to at least one test, in that test's Configure step.</p></div>`}</div>
     ${unassigned? `<p class="muted small" style="margin-top:16px;">${unassigned} test${unassigned===1?'':'s'} ${unassigned===1?"doesn't":"don't"} have a class assigned and won't appear above — set one in that test's Configure step.</p>` : ''}
   `;
 }
@@ -1432,8 +1471,11 @@ async function removeClassListStudent(className, mobile){
 /* ============================================================
    QUESTION BANK (standalone page)
    ============================================================ */
+let bankClassFilter = 'all';
+function setBankClassFilter(v){ bankClassFilter=v; render(); }
 function viewBank(){
   const bank = getDB().bank || [];
+  const filtered = bankClassFilter==='all' ? bank : bank.filter(item=>(item.assignedClass||'')===bankClassFilter);
   return `
     <div class="dash-head">
       <div>
@@ -1442,16 +1484,31 @@ function viewBank(){
       </div>
     </div>
     ${bank.length===0? `<div class="empty card"><h3>Nothing saved yet</h3><p>Open a test's Verify step and use "+ Save to Bank" on any question you'd like to reuse later.</p></div>` : `
+    <div class="row" style="justify-content:flex-end; margin-bottom:12px;">
+      <select onchange="setBankClassFilter(this.value)" style="max-width:180px;">
+        <option value="all" ${bankClassFilter==='all'?'selected':''}>All classes</option>
+        ${CLASS_OPTIONS.map(c=>`<option value="Class ${c}" ${bankClassFilter==='Class '+c?'selected':''}>Class ${c}</option>`).join('')}
+      </select>
+    </div>
+    ${filtered.length===0? `<div class="empty card"><h3>No saved questions for ${esc(bankClassFilter)}</h3><p>Try a different class, or switch back to All classes.</p></div>` : `
     <div class="test-list">
-      ${bank.map(item=>`
+      ${filtered.map(item=>`
         <div class="test-row" style="align-items:flex-start;">
           <div class="ti" style="max-width:75%;">
             <h4 style="font-size:14.5px; font-weight:600;">${esc(item.text.slice(0,140))}${item.text.length>140?'…':''}</h4>
-            <div class="meta">${typeLabelShort(item.type||'single')} · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}</div>
+            <div class="meta">${typeLabelShort(item.type||'single')} · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}
+              ${item.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(item.assignedClass)}</span>` : ''}
+            </div>
           </div>
-          <div class="ta"><button class="btn danger small" onclick="deleteBankItem('${item.id}')">Delete</button></div>
+          <div class="ta">
+            <select onchange="setBankItemClass('${item.id}', this.value)" style="max-width:130px;">
+              <option value="" ${!item.assignedClass?'selected':''}>No class</option>
+              ${CLASS_OPTIONS.map(c=>`<option value="Class ${c}" ${item.assignedClass==='Class '+c?'selected':''}>Class ${c}</option>`).join('')}
+            </select>
+            <button class="btn danger small" onclick="deleteBankItem('${item.id}')">Delete</button>
+          </div>
         </div>`).join('')}
-    </div>`}
+    </div>`}`}
   `;
 }
 
@@ -1652,8 +1709,6 @@ Answer: B
       <div class="row" style="margin-top:16px; justify-content:space-between; flex-wrap:wrap; gap:8px;">
         <div class="row" style="flex-wrap:wrap; gap:8px;">
           <button class="btn secondary" onclick="addBlankQuestion()">+ Add a question manually instead</button>
-          <button class="btn ghost small" onclick="addBlankTrueFalse()">+ True/False</button>
-          <button class="btn ghost small" onclick="addBlankNumerical()">+ Numerical</button>
           <button class="btn secondary" onclick="openBankPicker()">+ Insert from Question Bank</button>
         </div>
         <button class="btn amber" id="extractBtn" onclick="runExtraction()">Extract Questions →</button>
@@ -1785,27 +1840,6 @@ function addBlankQuestion(){
   persistDraft(); wizardStep='verify'; render();
   openEditModal(q.id, true);
 }
-function addBlankTrueFalse(){
-  const q = {
-    id: uid('q'), text:'', type:'truefalse',
-    options:[{id:'o0',text:'True'},{id:'o1',text:'False'}],
-    correct:[], numericMin:null, numericMax:null, image:null,
-    marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  };
-  wizardDraft.questions.push(q);
-  persistDraft(); wizardStep='verify'; render();
-  openEditModal(q.id, true);
-}
-function addBlankNumerical(){
-  const q = {
-    id: uid('q'), text:'', type:'numerical',
-    options:[], correct:[], numericMin:0, numericMax:0, image:null,
-    marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  };
-  wizardDraft.questions.push(q);
-  persistDraft(); wizardStep='verify'; render();
-  openEditModal(q.id, true);
-}
 function openBankPicker(){
   const bank = getDB().bank || [];
   const modal=document.createElement('div');
@@ -1899,7 +1933,7 @@ function questionCard(q,i){
       <button class="btn secondary small" onclick="markVerified('${q.id}')">Mark Verified</button>
       ${q.bankId
         ? `<span class="badge verified">✓ In Bank</span>`
-        : `<button class="btn ghost small" onclick="addToBank(findQ('${q.id}'))">+ Save to Bank</button>`}
+        : `<button class="btn ghost small" onclick="addToBank(findQ('${q.id}'), '${wizardDraft.meta.assignedClass||''}')">+ Save to Bank</button>`}
       <button class="btn ghost small" onclick="moveQ('${q.id}',-1)">↑</button>
       <button class="btn ghost small" onclick="moveQ('${q.id}',1)">↓</button>
       <button class="btn danger small" onclick="deleteQ('${q.id}')">Delete</button>
@@ -2387,8 +2421,8 @@ function renderUnfinishedSection(testId){
       <button class="btn ${unfinishedFilter==='reset'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('reset')">Reset/Invalidated (${counts.reset})</button>
     </div>
     ${filtered.length===0? `<div class="empty card"><p>No matching attempts.</p></div>` : `
-    <div class="card pad" style="overflow:auto;">
-      <table class="results">
+    <div class="card pad" style="overflow-x:auto;">
+      <table class="results" style="min-width:1150px;">
         <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Started At</th><th>Time Elapsed</th><th>Last Activity</th><th>Answered</th><th>Tab switches</th><th>Status</th><th></th><th></th><th></th></tr></thead>
         <tbody>
           ${filtered.map(a=>{
@@ -2407,9 +2441,9 @@ function renderUnfinishedSection(testId){
               <td>${answered} / ${totalQ}</td>
               <td>${a.tabSwitches||0}</td>
               <td><span class="badge ${badgeClass}">${a._status}</span></td>
-              <td><button class="btn ghost small" onclick="openProgressModal('${testId}','${a.id}')">View Progress</button></td>
-              <td>${canReset? `<button class="btn danger small" onclick="resetAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Reset</button>` : ''}</td>
-              <td><button class="btn danger small" onclick="deleteAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Delete</button></td>
+              <td style="white-space:nowrap;"><button class="btn ghost small" onclick="openProgressModal('${testId}','${a.id}')">View Progress</button></td>
+              <td style="white-space:nowrap;">${canReset? `<button class="btn danger small" onclick="resetAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Reset</button>` : ''}</td>
+              <td style="white-space:nowrap;"><button class="btn danger small" onclick="deleteAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Delete</button></td>
             </tr>`;
           }).join('')}
         </tbody>
