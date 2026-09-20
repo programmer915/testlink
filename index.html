@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
@@ -27,8 +28,36 @@
   --red-soft:#F6DFDA;
   --muted:#78716A;
   --border:#DED6C4;
+  --surface-soft:#FBF9F4;
+  --neutral-soft:#EDEAE0;
   --shadow: 0 1px 0 rgba(27,36,48,.04);
   --radius: 3px;
+}
+/* Dark mode — teacher-facing pages only (toggled via the topbar button).
+   Scoped to body.teacher-dark so the student exam experience (attempt
+   shell) is never affected; renderInner() only ever adds this class
+   while rendering the authenticated teacher shell and strips it
+   everywhere else. Every teacher-facing rule already reads color from
+   these variables, so redefining them here is enough to re-theme the
+   whole dashboard, wizard, results, and classes UI without a second copy
+   of each rule. */
+body.teacher-dark{
+  --ink:#EDE8DA;
+  --ink-soft:#C7BFAA;
+  --paper:#1C1A14;
+  --paper-line:#332F22;
+  --card:#26231A;
+  --amber:#E0A855;
+  --amber-soft:#3B2E17;
+  --green:#7BCBA0;
+  --green-soft:#203A2C;
+  --red:#E28A79;
+  --red-soft:#3C231F;
+  --muted:#A69E8A;
+  --border:#3A3627;
+  --surface-soft:#231F16;
+  --neutral-soft:#332F22;
+  --shadow: 0 1px 0 rgba(0,0,0,.3);
 }
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
@@ -44,13 +73,23 @@ h1,h2,h3,h4{font-family:'Source Serif 4',serif; font-weight:700; margin:0; color
 a{color:inherit;}
 button{font-family:'Inter',sans-serif;}
 .mono{font-family:'IBM Plex Mono',monospace;}
+body{transition:background-color .15s, color .15s;}
+
+/* Keyboard-focus outlines — visible only for keyboard/assistive-tech
+   navigation (:focus-visible), not on every mouse click, on every
+   naturally-focusable control in the app: buttons, links, form fields. */
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible{
+  outline:2px solid var(--amber);
+  outline-offset:2px;
+}
 
 /* ---------- layout shells ---------- */
 #app{min-height:100vh; display:flex; flex-direction:column;}
 .topbar{
   display:flex; align-items:center; justify-content:space-between;
   padding:16px 28px; border-bottom:1px solid var(--border);
-  background:var(--paper);
+  background:var(--paper); position:relative; /* anchors the mobile dropdown nav below it */
 }
 .brand{display:flex; align-items:baseline; gap:8px; cursor:pointer;}
 .brand .mark{
@@ -60,9 +99,16 @@ button{font-family:'Inter',sans-serif;}
 }
 .brand .name{font-family:'Source Serif 4',serif; font-weight:700; font-size:19px; letter-spacing:.2px;}
 .brand .tag{color:var(--muted); font-size:12.5px;}
-.topnav{display:flex; gap:22px; font-size:13.5px; color:var(--ink-soft);}
+.navtoggle{display:none; background:none; border:1px solid var(--border); border-radius:4px; padding:7px 12px; font-size:16px; cursor:pointer; color:var(--ink);}
+.topnav{display:flex; gap:22px; font-size:13.5px; color:var(--ink-soft); align-items:center;}
 .topnav span{cursor:pointer; padding-bottom:3px; border-bottom:2px solid transparent;}
 .topnav span.active{border-bottom-color:var(--amber); color:var(--ink); font-weight:600;}
+.themetoggle{
+  font-family:'Inter',sans-serif; font-size:13px; cursor:pointer;
+  background:none; border:1px solid var(--border); border-radius:20px;
+  padding:5px 12px; color:var(--ink-soft);
+}
+.themetoggle:hover{border-color:var(--ink-soft); color:var(--ink);}
 .shell{flex:1; width:100%; max-width:1080px; margin:0 auto; padding:34px 28px 70px;}
 .shell.wide{max-width:1220px;}
 
@@ -87,7 +133,7 @@ button{font-family:'Inter',sans-serif;}
 label.field{display:block; font-size:12.5px; color:var(--muted); margin-bottom:5px; font-weight:600; letter-spacing:.2px;}
 input[type=text],input[type=number],input[type=datetime-local],textarea,select{
   width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:var(--radius);
-  background:#fff; font-family:'Inter',sans-serif; font-size:14px; color:var(--ink);
+  background:var(--card); font-family:'Inter',sans-serif; font-size:14px; color:var(--ink);
 }
 textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;}
 .fieldgrid{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;}
@@ -98,7 +144,7 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 .badge.verified{background:var(--green-soft); color:var(--green);}
 .badge.review{background:var(--red-soft); color:var(--red);}
 .badge.edited{background:var(--amber-soft); color:var(--amber);}
-.badge.draft{background:#EDEAE0; color:var(--muted);}
+.badge.draft{background:var(--neutral-soft); color:var(--muted);}
 .badge.published{background:var(--green-soft); color:var(--green);}
 .muted{color:var(--muted);}
 .small{font-size:12.5px;}
@@ -132,7 +178,7 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 .step.done{color:var(--ink-soft);}
 .dropzone{
   border:1.5px dashed var(--border); border-radius:var(--radius); padding:40px 20px;
-  text-align:center; color:var(--muted); background:#FBF9F4; margin-bottom:18px;
+  text-align:center; color:var(--muted); background:var(--surface-soft); margin-bottom:18px;
 }
 .dropzone.drag{border-color:var(--amber); background:var(--amber-soft);}
 .spinner{
@@ -141,7 +187,7 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 }
 @keyframes spin{to{transform:rotate(360deg);}}
 .progressline{font-size:12.5px; color:var(--muted); margin-top:10px; min-height:18px;}
-.filepill{display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--border); border-radius:20px; font-size:12.5px; background:#fff; margin-top:10px;}
+.filepill{display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--border); border-radius:20px; font-size:12.5px; background:var(--card); margin-top:10px;}
 .filepill button{border:none; background:none; cursor:pointer; color:var(--red); font-size:13px;}
 
 /* question card - ruled paper feel */
@@ -214,21 +260,31 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 table.results{width:100%; border-collapse:collapse; font-size:13.5px;}
 table.results th{text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:8px 10px; border-bottom:1px solid var(--border);}
 table.results td{padding:9px 10px; border-bottom:1px solid var(--paper-line);}
-table.results tr:hover td{background:#FBF9F4;}
+table.results tr:hover td{background:var(--surface-soft);}
 
 .modalbg{position:fixed; inset:0; background:rgba(27,36,48,.45); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px;}
-.modal{background:#fff; border-radius:6px; max-width:560px; width:100%; max-height:88vh; overflow:auto; padding:24px;}
+.modal{background:var(--card); border-radius:6px; max-width:560px; width:100%; max-height:88vh; overflow:auto; padding:24px;}
 .authshell{max-width:400px; margin:70px auto 0; padding-bottom:60px;}
 .authmsg{background:var(--red-soft); color:var(--red); padding:9px 12px; border-radius:4px; font-size:13px; margin-bottom:12px;}
 .synctag{font-size:11px; padding:2px 9px; border-radius:20px; font-weight:700;}
 .synctag.online{background:var(--green-soft); color:var(--green);}
-.synctag.offline{background:#EDEAE0; color:var(--muted);}
+.synctag.offline{background:var(--neutral-soft); color:var(--muted);}
 .fullload{display:flex; align-items:center; justify-content:center; min-height:60vh; color:var(--muted);}
 @media (max-width:720px){
   .fieldgrid{grid-template-columns:1fr;}
   .stat-row{grid-template-columns:repeat(2,1fr);}
   .resultgrid{grid-template-columns:1fr 1fr;}
+  .navtoggle{display:inline-flex;}
   .topnav{display:none;}
+  .topnav.open{
+    display:flex; flex-direction:column; align-items:flex-start; gap:14px;
+    position:absolute; top:100%; left:0; right:0; background:var(--paper);
+    border-bottom:1px solid var(--border); padding:16px 20px; z-index:50;
+    box-shadow:0 8px 16px rgba(27,36,48,.08);
+  }
+  .dash-head{flex-direction:column; align-items:flex-start; gap:14px;}
+  .test-row{flex-direction:column; align-items:flex-start; gap:12px;}
+  .test-row .ta{flex-wrap:wrap; width:100%;}
 }
 </style>
 </head>
@@ -255,6 +311,7 @@ function fmtTime(ms){
   return (h>0?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
 }
 function fmtDateTime(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}); }
+function fmtDate(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleDateString([], {dateStyle:'medium'}); }
 function fmtDateTimeExact(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleString([], {dateStyle:'medium', timeStyle:'medium'}); }
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function toast(msg){
@@ -265,21 +322,38 @@ function letter(i){ return String.fromCharCode(65+i); }
 // Normalizes a mobile number down to digits only, so "+91 98765-43210" and
 // "9876543210" collide to the same dedup key regardless of formatting.
 function sanitizeMobile(m){ return (m||'').replace(/[^0-9]/g,''); }
+// Canonical mobile key used everywhere a student is identified: strips all
+// non-digits, then keeps the LAST 10 digits (so a "+91 98765 43210" country-
+// code entry and a bare "9876543210" entry collide to the same 10-digit
+// key). Returns '' if there aren't at least 10 digits — callers treat that
+// as invalid.
+function canonicalMobile10(m){
+  const d = sanitizeMobile(m);
+  if(d.length < 10) return '';
+  return d.slice(-10);
+}
+// Collapses internal whitespace and trims, then lowercases — used as the
+// case-insensitive, extra-space-insensitive key for matching a typed name
+// against a class list's registered name.
+function normalizeName(s){ return (s||'').trim().replace(/\s+/g,' ').toLowerCase(); }
+function normalizeField(s){ return (s||'').trim().replace(/\s+/g,' '); }
+// Deterministic Firestore doc ID for a teacher's class roster: every test
+// with the same owner + assignedClass shares one roster, computed the same
+// way client-side and in firestore.rules (no lookup/query needed).
+function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
 
 /* ---------------- Firebase (required) ----------------
    TestLink is now a server-backed app: every teacher signs in, and every
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -469,6 +543,19 @@ function renderQuestionReviewCard(q, index, given, wasCorrect, keyEntry){
       ${body}
     </div>`;
 }
+/** The single definition of an attempt's display status, shared by the
+    Results/Unfinished-Attempts view and the Classes page so both always
+    agree. Firestore only ever stores 'in-progress', 'submitted', or (once
+    a teacher resets one) 'invalidated' — "In Progress" vs. "Expired/Time
+    Up" is derived here, purely from data already on the attempt: once its
+    own fixed time allowance has elapsed without a submission, the student
+    is gone and it will never complete on its own. Reconnecting or a
+    teacher opening Results never changes this and never grants extra time. */
+function deriveAttemptStatus(a, now){
+  if(a.status==='submitted') return 'Submitted';
+  if(a.status==='invalidated') return 'Reset/Invalidated';
+  return (now - a.startedAt > a.availableMs) ? 'Expired/Time Up' : 'In Progress';
+}
 function gradeAttempt(test, key, a){
   let score=0, maxScore=0, correctCount=0, incorrectCount=0, unattempted=0, negativeDeduction=0;
   const perQuestionCorrect={};
@@ -527,7 +614,7 @@ function subscribeBank(){
       if(location.hash==='#/bank') render();
     }, err=>toast('Sync error: '+err.message));
 }
-function addToBank(q){
+function addToBank(q, className){
   if(!q) return;
   if(q.bankId){ toast('Already saved to your bank'); return; } // guards against accidental duplicate saves
   const item = {
@@ -535,7 +622,8 @@ function addToBank(q){
     text: q.text, type: q.type||'single', options: q.options, correct: q.correct,
     numericMin: q.numericMin!=null? q.numericMin : null, numericMax: q.numericMax!=null? q.numericMax : null,
     image: q.image || null,
-    marks: q.marks, negativeMarks: q.negativeMarks, createdAt: Date.now()
+    marks: q.marks, negativeMarks: q.negativeMarks, createdAt: Date.now(),
+    assignedClass: className || '' // tags the saved question with the class it was written for
   };
   dbf.collection('questionBank').add(item)
     .then(ref=>{
@@ -548,6 +636,9 @@ function addToBank(q){
       toast('Saved to your question bank');
     })
     .catch(err=>toast('Could not save: '+err.message));
+}
+function setBankItemClass(id, cls){
+  dbf.collection('questionBank').doc(id).update({assignedClass: cls}).catch(err=>toast('Could not update: '+err.message));
 }
 function deleteBankItem(id){
   if(!confirm('Remove this question from your bank?')) return;
@@ -667,9 +758,43 @@ function newTest(){
 let wizardDraft = null; // in-memory test being created/edited
 let attemptState = null; // in-memory current student attempt
 
+/** Horizontal scroll position of any wide table (Results, Question-wise
+    Analytics, Unfinished Attempts) was resetting to the start on its own,
+    without the person touching anything. Root cause: the Results page
+    keeps a live listener open (subscribeResults()) that re-renders the
+    entire page on every change to any attempt — including every student's
+    routine 30s heartbeat — which replaces the DOM wholesale and silently
+    resets scrollLeft along with it. renderInner() below is the real
+    render function, unchanged; this wrapper just remembers each marked
+    scrollable element's scrollLeft (by its data-scroll-key) before every
+    re-render and reapplies it after, so a re-render mid-scroll no longer
+    snaps the view back to the start. */
+let _scrollPositions = {};
+function captureScrollPositions(){
+  document.querySelectorAll('[data-scroll-key]').forEach(el=>{
+    _scrollPositions[el.getAttribute('data-scroll-key')] = el.scrollLeft;
+  });
+}
+function restoreScrollPositions(){
+  document.querySelectorAll('[data-scroll-key]').forEach(el=>{
+    const key = el.getAttribute('data-scroll-key');
+    if(_scrollPositions[key]) el.scrollLeft = _scrollPositions[key];
+  });
+}
 function render(){
+  captureScrollPositions();
+  renderInner();
+  restoreScrollPositions();
+}
+function renderInner(){
   const hash = location.hash || '#/dashboard';
   const app = document.getElementById('app');
+
+  // Default every render to light mode; only the teacher-shell branch
+  // below (the sole place dark mode is meant to apply) turns it back on,
+  // so any other page — including the student attempt shell — can never
+  // inherit a dark class left over from a previous render.
+  document.body.classList.remove('teacher-dark');
 
   // The Results page's listener re-reads on every change to any attempt in
   // that test (including every student's 30s heartbeat) — cheap while the
@@ -728,6 +853,26 @@ function render(){
   let route='dashboard';
   if(hash.startsWith('#/create')) { body=viewWizard(); route='create'; }
   else if(hash.startsWith('#/bank')) { body=viewBank(); route='bank'; }
+  else if(hash.startsWith('#/classes/')) {
+    const cls = decodeURIComponent(hash.slice('#/classes/'.length));
+    const cp = classPageCache[cls];
+    if(!cp){
+      if(!classPageLoading.has(cls)) loadClassPage(cls);
+      body = `<div class="fullload"><span class="spinner"></span>Loading ${esc(cls)}…</div>`;
+    } else {
+      body = viewClassDetail(cls);
+    }
+    route='classes';
+  }
+  else if(hash.startsWith('#/classes')) {
+    if(!classesIndexLoaded){
+      if(!window._classesIndexLoading) loadClassesIndex();
+      body = `<div class="fullload"><span class="spinner"></span>Loading classes…</div>`;
+    } else {
+      body = viewClasses();
+    }
+    route='classes';
+  }
   else if(hash.startsWith('#/results/')) {
     const tid=hash.split('/')[2];
     subscribeResults(tid);
@@ -748,25 +893,45 @@ function render(){
   }
   else { body=viewDashboard(); route='dashboard'; }
 
+  // This is the only branch that ever renders the teacher shell — dark
+  // mode is scoped to it by toggling the class only here. Every other
+  // exit point in renderInner() (auth gate, attempt shell, loading
+  // states above) leaves the class untouched from the top-of-function
+  // removal, so a student's browser can never end up in dark mode.
+  document.body.classList.toggle('teacher-dark', teacherTheme==='dark');
+
   app.innerHTML = `
     <div class="topbar">
-      <div class="brand" onclick="location.hash='#/dashboard'">
-        <span class="mark">T</span>
-        <span class="name">TestLink</span>
-        <span class="tag">&nbsp;· teacher console</span>
+      <div class="brand" onclick="location.hash='#/dashboard'" style="flex-direction:column; align-items:flex-start; gap:0;">
+        <span><span class="mark">T</span><span class="name">TestLink</span></span>
+        <span class="tag">Teacher Console</span>
       </div>
-      <div class="topnav">
+      <button class="navtoggle" onclick="toggleMobileNav()" aria-label="Menu">${mobileNavOpen? '✕' : '☰'}</button>
+      <div class="topnav ${mobileNavOpen?'open':''}">
         <span class="synctag online">● saved to your account</span>
-        <span class="${route==='dashboard'?'active':''}" onclick="location.hash='#/dashboard'">Dashboard</span>
-        <span class="${route==='create'?'active':''}" onclick="startNewTest()">Create Test</span>
-        <span class="${route==='bank'?'active':''}" onclick="location.hash='#/bank'">Question Bank</span>
-        <span onclick="doLogout()">Sign out (${esc(currentUser.email)})</span>
+        <span class="${route==='dashboard'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/dashboard'">Dashboard</span>
+        <span class="${route==='create'?'active':''}" onclick="mobileNavOpen=false; startNewTest()">Create Test</span>
+        <span class="${route==='bank'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/bank'">Question Bank</span>
+        <span class="${route==='classes'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/classes'">Classes</span>
+        <button class="themetoggle" onclick="toggleTeacherTheme()" aria-label="${teacherTheme==='dark'?'Switch to light mode':'Switch to dark mode'}">${teacherTheme==='dark'?'☀️ Light':'🌙 Dark'}</button>
+        <span onclick="mobileNavOpen=false; doLogout()">Sign out (${esc(currentUser.email)})</span>
       </div>
     </div>
     <div class="shell wide">${body}</div>
   `;
   wireDashboardEvents();
   if(route==='create') afterWizardRender();
+}
+let mobileNavOpen = false;
+function toggleMobileNav(){ mobileNavOpen = !mobileNavOpen; render(); }
+// Dark mode preference — teacher-facing pages only (see the
+// body.classList.toggle('teacher-dark', ...) call above). Persisted per
+// browser so it's remembered next time this teacher signs in here.
+let teacherTheme = localStorage.getItem('teacherTheme') || 'light';
+function toggleTeacherTheme(){
+  teacherTheme = teacherTheme==='dark' ? 'light' : 'dark';
+  localStorage.setItem('teacherTheme', teacherTheme);
+  render();
 }
 window.addEventListener('hashchange', render);
 window.addEventListener('DOMContentLoaded', render);
@@ -833,7 +998,8 @@ function viewDashboard(){
   const drafts=tests.filter(t=>t.status==='draft');
   const published=tests.filter(t=>t.status==='published');
   const filteredPublished = dashboardClassFilter==='all' ? published : published.filter(t=>(t.meta.assignedClass||'')===dashboardClassFilter);
-  const totalStudents = Object.values(db.results).reduce((a,r)=>a+r.length,0);
+  const now = Date.now();
+  const activeTests = published.filter(t=>t.config.deadlineAt && t.config.deadlineAt > now).length;
 
   return `
     <div class="dash-head">
@@ -848,7 +1014,7 @@ function viewDashboard(){
       <div class="stat"><div class="num">${tests.length}</div><div class="lbl">Total tests</div></div>
       <div class="stat"><div class="num">${published.length}</div><div class="lbl">Published</div></div>
       <div class="stat"><div class="num">${drafts.length}</div><div class="lbl">Drafts</div></div>
-      <div class="stat"><div class="num">${totalStudents}</div><div class="lbl">Submissions recorded</div></div>
+      <div class="stat"><div class="num">${activeTests}</div><div class="lbl">Active tests</div></div>
     </div>
 
     <div class="row" style="justify-content:space-between; align-items:center; margin-top:26px;">
@@ -870,22 +1036,62 @@ function viewDashboard(){
 }
 let dashboardClassFilter = 'all';
 function setDashboardClassFilter(v){ dashboardClassFilter=v; render(); }
+
+/** Live-accurate submission counts for the test cards. db.results[testId]
+    (populated by subscribeResults()) is the richer, authoritative source
+    once a teacher has actually opened that test's Results page this
+    session — used as-is when present. Every other published test gets a
+    one-time fetch of its attempts collection, counted client-side —
+    the same proven approach the Classes page already uses reliably
+    (a .count() aggregation query was tried first here but proved
+    unreliable — it could silently stall on a flaky connection instead of
+    resolving or failing cleanly). Read cost stays trivial at classroom
+    scale, and there's no permanently-open listener. */
+let submissionCounts = {};        // testId -> count
+let submissionCountsLoading = new Set();
+async function loadSubmissionCount(testId){
+  if(submissionCountsLoading.has(testId)) return;
+  submissionCountsLoading.add(testId);
+  try{
+    const fetchPromise = dbf.collection('tests').doc(testId).collection('attempts')
+      .where('status','==','submitted').get();
+    const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error('timed out')), 15000));
+    const snap = await Promise.race([fetchPromise, timeout]);
+    submissionCounts[testId] = snap.size;
+  }catch(err){
+    submissionCounts[testId] = 0; // opening Results (or a manual retry) will correct this if it was transient
+  }
+  submissionCountsLoading.delete(testId);
+  render();
+}
 function testRow(t,db){
-  const n = (db.results[t.id]||[]).length;
+  let n, subLabel;
+  if(db.results[t.id] !== undefined){
+    n = db.results[t.id].length;
+    subLabel = `${n} submission${n===1?'':'s'}`;
+  } else if(t.status!=='published'){
+    subLabel = '0 submissions'; // a draft has never been open to attempts
+  } else if(submissionCounts[t.id] !== undefined){
+    n = submissionCounts[t.id];
+    subLabel = `${n} submission${n===1?'':'s'}`;
+  } else {
+    subLabel = 'counting submissions…';
+    loadSubmissionCount(t.id);
+  }
   return `
     <div class="test-row">
       <div class="ti">
-        <h4>${esc(t.meta.name)}</h4>
-        <div class="meta">${t.questions.length} questions · ${n} submission${n===1?'':'s'} · created ${new Date(t.createdAt).toLocaleDateString()}
-          <span class="badge ${t.status==='published'?'published':'draft'}" style="margin-left:8px;">${t.status}</span>
-          ${t.meta.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(t.meta.assignedClass)}</span>` : ''}
+        <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap;">
+          <h4>${esc(t.meta.name)}</h4>
+          <span class="badge ${t.status==='published'?'published':'draft'}">${t.status}</span>
+          ${t.meta.assignedClass? `<span class="badge edited">${esc(t.meta.assignedClass)}</span>` : ''}
         </div>
+        <div class="meta">${t.questions.length} question${t.questions.length===1?'':'s'} · ${subLabel}</div>
+        <div class="meta">Created ${fmtDate(t.createdAt)} · Deadline ${fmtDateTime(t.config.deadlineAt)}</div>
       </div>
       <div class="ta">
         <button class="btn secondary small" onclick="location.hash='#/edit/${t.id}'">Open</button>
         <button class="btn secondary small" onclick="location.hash='#/results/${t.id}'">Results</button>
-        <button class="btn ghost small" onclick="location.hash='#/preview/${t.id}'">Preview as Student</button>
-        <button class="btn ghost small" onclick="exportQuestionPaperDocx('${t.id}')">Question Paper (.docx)</button>
         <button class="btn ghost small" onclick="dupTest('${t.id}')">Duplicate</button>
         <button class="btn danger small" onclick="removeTest('${t.id}')">Delete</button>
       </div>
@@ -896,6 +1102,13 @@ function wireDashboardEvents(){
     const db=getDB(); const src=db.tests[id]; if(!src) return;
     const copy=JSON.parse(JSON.stringify(src));
     copy.id=uid('t'); copy.status='draft'; copy.createdAt=Date.now(); copy.meta.name=src.meta.name+' (copy)';
+    // The deep clone above also copies the SOURCE test's slug — left as-is,
+    // publishing the copy would reuse that exact slug (publishTest() only
+    // ever generates a new one when the field is empty), so the shared
+    // link would match BOTH tests and a student's browser could resolve to
+    // either one. Clearing it here guarantees the copy gets its own fresh,
+    // unique link the next time it's published.
+    copy.slug = null;
     saveTest(copy); toast('Duplicated'); render();
   };
   window.removeTest = (id)=>{
@@ -905,10 +1118,487 @@ function wireDashboardEvents(){
 }
 
 /* ============================================================
+   CLASSES
+   Tests are grouped by their existing meta.assignedClass field.
+   A class's roster ("class list") lives at
+   classRosters/{ownerUid}__{className}/students/{canonicalMobile} — one
+   small doc per student, never one big spreadsheet blob (Spark-friendly:
+   no document ever grows with the class, and Firestore's 1MiB/doc cap
+   never comes into play here).
+
+   Everything on this page is fetched with one-time .get() calls, never
+   onSnapshot listeners — a teacher browsing Classes shouldn't hold open a
+   dozen live listeners (one per test, ticking on every heartbeat) that
+   just idle in the background. Refresh buttons re-fetch on demand.
+   ============================================================ */
+let classesIndex = {};         // className -> {studentCount}
+let classesIndexLoaded = false;
+let classPageCache = {};       // className -> {students, tests, attempts, fetchedAt} | {error}
+let classPageLoading = new Set();
+let classListImport = {};      // className -> {rows, mode, fileName}
+
+function cssId(s){ return (s||'').replace(/[^a-zA-Z0-9]/g,'_'); }
+
+async function loadClassesIndex(){
+  window._classesIndexLoading = true;
+  const uidv = currentUser.uid;
+  const names = CLASS_OPTIONS.map(c=>'Class '+c);
+  await Promise.all(names.map(async cn=>{
+    try{
+      const snap = await dbf.collection('classRosters').doc(rosterIdFor(uidv, cn)).get();
+      classesIndex[cn] = { studentCount: snap.exists ? (snap.data().studentCount||0) : 0 };
+    }catch(e){ classesIndex[cn] = { studentCount: 0 }; }
+  }));
+  classesIndexLoaded = true;
+  window._classesIndexLoading = false;
+  render();
+}
+function refreshClassesIndex(){ classesIndexLoaded = false; render(); }
+
+function viewClasses(){
+  const db = getDB();
+  const tests = Object.values(db.tests);
+  const rows = CLASS_OPTIONS.map(c=>{
+    const cn = 'Class '+c;
+    const classTests = tests.filter(t=>(t.meta.assignedClass||'')===cn);
+    if(classTests.length===0) return null; // only show classes that actually have a test assigned
+    const published = classTests.filter(t=>t.status==='published').length;
+    const reg = (classesIndex[cn]||{}).studentCount || 0;
+    return `
+      <div class="test-row">
+        <div class="ti">
+          <h4>${cn}</h4>
+          <div class="meta">${classTests.length} test${classTests.length===1?'':'s'} (${published} published) · ${reg} registered student${reg===1?'':'s'}</div>
+        </div>
+        <div class="ta">
+          <button class="btn secondary small" onclick="location.hash='#/classes/${encodeURIComponent(cn)}'">Open →</button>
+        </div>
+      </div>`;
+  }).filter(Boolean).join('');
+  const unassigned = tests.filter(t=>!(t.meta.assignedClass||'')).length;
+  return `
+    <div class="dash-head">
+      <div>
+        <h1 style="font-size:26px;">Classes</h1>
+        <p class="muted" style="margin-top:6px;">Tests, registered students, and results grouped by class.</p>
+      </div>
+      <button class="btn secondary" onclick="refreshClassesIndex()">Refresh counts</button>
+    </div>
+    <div class="test-list" style="margin-top:18px;">${rows || `<div class="empty card"><h3>No classes yet</h3><p>A class appears here once you assign it to at least one test, in that test's Configure step.</p></div>`}</div>
+    ${unassigned? `<p class="muted small" style="margin-top:16px;">${unassigned} test${unassigned===1?'':'s'} ${unassigned===1?"doesn't":"don't"} have a class assigned and won't appear above — set one in that test's Configure step.</p>` : ''}
+  `;
+}
+
+/** One-time fetch of everything a class page needs: the roster (registered
+    students), the tests assigned to this class (already in the realtime-
+    synced local cache — no extra read), and every attempt across those
+    tests (one .get() per test's attempts subcollection). Hidden-visibility
+    tests with ungraded submissions are graded here too, exactly like
+    subscribeResults() does, so "Average/highest score" and "Pass %" are
+    correct regardless of a test's result-visibility setting. */
+async function loadClassPage(className){
+  if(classPageLoading.has(className)) return;
+  classPageLoading.add(className);
+  try{
+    const uidv = currentUser.uid;
+    const rid = rosterIdFor(uidv, className);
+    const studentsSnap = await dbf.collection('classRosters').doc(rid).collection('students').get();
+    const students = studentsSnap.docs.map(d=>({id:d.id, ...d.data()}));
+
+    const tests = Object.values(getDB().tests).filter(t=>(t.meta.assignedClass||'')===className);
+
+    const attempts = [];
+    for(const t of tests){
+      const snap = await dbf.collection('tests').doc(t.id).collection('attempts').get();
+      snap.forEach(d=>{ const a=d.data(); a.id=d.id; a._testId=t.id; a._testName=t.meta.name; attempts.push(a); });
+    }
+    for(const t of tests){
+      const needGrading = attempts.filter(a=>a._testId===t.id && a.status==='submitted' && typeof a.percentage!=='number');
+      if(needGrading.length){
+        const key = await ensureAnswerKey(t.id);
+        needGrading.forEach(a=>Object.assign(a, gradeAttempt(t, key, a)));
+      }
+    }
+    classPageCache[className] = { students, tests, attempts, fetchedAt: Date.now() };
+  }catch(err){
+    classPageCache[className] = { error: err.message, students:[], tests:[], attempts:[], fetchedAt: Date.now() };
+  }
+  classPageLoading.delete(className);
+  render();
+}
+function refreshClassPage(className){ delete classPageCache[className]; render(); }
+
+/** Statistic definitions (all computed client-side over the one-time
+    fetch in loadClassPage):
+    - Active participants: distinct registered students with an attempt
+      currently "In Progress" (started, not yet submitted, time not yet up).
+    - Submitted / In Progress / Expired-Time-Up / Reset-Invalidated:
+      deriveAttemptStatus() applied to every attempt across this class's tests.
+    - Average/Highest score, Pass rate: over graded submitted attempts only
+      ("hidden" tests are graded on the fly, see loadClassPage).
+    - Most missed: the registered student(s) who did NOT submit the largest
+      number of this class's *published* tests.
+    - Best/most consistent: the student with the highest average percentage
+      across their own submissions; ties broken by the lowest spread
+      (standard deviation) across those submissions, then by more submissions.
+    All per-student aggregation is keyed by the class list's canonical
+    10-digit mobile number, never by the free-text name typed into an
+    attempt — so a typo or case difference in an attempt can't split one
+    student into two, or merge two different students together. */
+function computeClassStats(className){
+  const cp = classPageCache[className];
+  const now = Date.now();
+  const rosterByMobile = {};
+  cp.students.forEach(s=>{ rosterByMobile[s.id]=s; });
+
+  const withStatus = cp.attempts.map(a=>({
+    ...a, _status: deriveAttemptStatus(a, now),
+    _mobile: canonicalMobile10(a.student && a.student.mobile)
+  }));
+  const submitted = withStatus.filter(a=>a._status==='Submitted');
+  const inProgress = withStatus.filter(a=>a._status==='In Progress');
+  const expired = withStatus.filter(a=>a._status==='Expired/Time Up');
+  const reset = withStatus.filter(a=>a._status==='Reset/Invalidated');
+  const activeParticipants = new Set(inProgress.map(a=>a._mobile || a.id)).size;
+
+  const graded = submitted.filter(a=>typeof a.percentage==='number');
+  const avgScore = graded.length ? graded.reduce((s,a)=>s+a.percentage,0)/graded.length : null;
+  const highestScore = graded.length ? Math.max(...graded.map(a=>a.percentage)) : null;
+  const passCount = graded.filter(a=>{
+    const t = cp.tests.find(x=>x.id===a._testId);
+    return t ? a.percentage >= t.config.passPercent : false;
+  }).length;
+  const passPct = graded.length ? (passCount/graded.length*100) : null;
+
+  const perStudent = {};
+  graded.forEach(a=>{
+    const mob = a._mobile; if(!mob) return;
+    const roster = rosterByMobile[mob];
+    const name = roster ? roster.name : ((a.student && a.student.name) || 'Unknown');
+    if(!perStudent[mob]) perStudent[mob] = {mobile:mob, name, scores:[], testIds:new Set()};
+    perStudent[mob].scores.push(a.percentage);
+    perStudent[mob].testIds.add(a._testId);
+  });
+
+  const publishedTests = cp.tests.filter(t=>t.status==='published');
+  let mostMissed = [];
+  if(publishedTests.length && cp.students.length){
+    const missedList = cp.students.map(s=>{
+      const doneIds = perStudent[s.id] ? perStudent[s.id].testIds : new Set();
+      return { name:s.name, mobile:s.id, missed: publishedTests.filter(t=>!doneIds.has(t.id)).length };
+    });
+    const maxMissed = Math.max(0, ...missedList.map(m=>m.missed));
+    if(maxMissed>0) mostMissed = missedList.filter(m=>m.missed===maxMissed);
+  }
+
+  let best = null;
+  Object.values(perStudent).forEach(p=>{
+    const avg = p.scores.reduce((a,b)=>a+b,0)/p.scores.length;
+    const variance = p.scores.length>1 ? p.scores.reduce((s,v)=>s+Math.pow(v-avg,2),0)/p.scores.length : 0;
+    const stddev = Math.sqrt(variance);
+    const cand = {name:p.name, mobile:p.mobile, avg, stddev, count:p.scores.length};
+    if(!best || cand.avg>best.avg || (cand.avg===best.avg && cand.stddev<best.stddev) || (cand.avg===best.avg && cand.stddev===best.stddev && cand.count>best.count)) best=cand;
+  });
+
+  const events = [];
+  withStatus.forEach(a=>{
+    const roster = rosterByMobile[a._mobile];
+    const name = roster ? roster.name : ((a.student && a.student.name) || 'Unknown');
+    events.push({ts:a.startedAt, type:'started', name, testName:a._testName});
+    if(a.status==='submitted') events.push({ts:(a.submittedAt||a.startedAt), type:'submitted', name, testName:a._testName});
+  });
+  events.sort((x,y)=>y.ts-x.ts);
+
+  return {
+    counts:{ submitted:submitted.length, inProgress:inProgress.length, expired:expired.length, reset:reset.length },
+    activeParticipants, avgScore, highestScore, passPct,
+    mostMissed, best, recentActivity: events.slice(0,15),
+    registeredCount: cp.students.length, publishedTestsCount: publishedTests.length
+  };
+}
+
+function viewClassDetail(className){
+  const cp = classPageCache[className];
+  if(cp.error){
+    return `<button class="btn ghost small" onclick="location.hash='#/classes'">← Back to classes</button>
+      <div class="empty card" style="margin-top:14px;"><h3>Couldn't load this class</h3><p class="small muted">${esc(cp.error)}</p></div>`;
+  }
+  const stats = computeClassStats(className);
+  const tests = cp.tests.slice().sort((a,b)=>b.createdAt-a.createdAt);
+
+  return `
+    <button class="btn ghost small" onclick="location.hash='#/classes'">← Back to classes</button>
+    <div class="dash-head" style="margin-top:10px;">
+      <div>
+        <h1 style="font-size:26px;">${esc(className)}</h1>
+        <p class="muted" style="margin-top:6px;">${stats.registeredCount} registered student${stats.registeredCount===1?'':'s'} · ${tests.length} test${tests.length===1?'':'s'}</p>
+      </div>
+      <button class="btn secondary small" onclick="refreshClassPage('${esc(className)}')">Refresh</button>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num">${stats.activeParticipants}</div><div class="lbl">Active participants</div></div>
+      <div class="stat"><div class="num">${stats.counts.submitted}</div><div class="lbl">Submitted</div></div>
+      <div class="stat"><div class="num">${stats.counts.inProgress}</div><div class="lbl">In Progress</div></div>
+      <div class="stat"><div class="num">${stats.counts.expired}</div><div class="lbl">Expired/Time Up</div></div>
+      <div class="stat"><div class="num">${stats.counts.reset}</div><div class="lbl">Reset/Invalidated</div></div>
+    </div>
+    <div class="stat-row" style="margin-top:10px;">
+      <div class="stat"><div class="num">${stats.avgScore!=null? stats.avgScore.toFixed(1)+'%':'—'}</div><div class="lbl">Average score</div></div>
+      <div class="stat"><div class="num">${stats.highestScore!=null? stats.highestScore.toFixed(1)+'%':'—'}</div><div class="lbl">Highest score</div></div>
+      <div class="stat"><div class="num">${stats.passPct!=null? stats.passPct.toFixed(0)+'%':'—'}</div><div class="lbl">Pass rate</div></div>
+    </div>
+
+    <div class="row" style="gap:14px; margin-top:26px; align-items:flex-start; flex-wrap:wrap;">
+      <div class="card pad" style="flex:1; min-width:260px;">
+        <h4 style="margin-bottom:8px;">Most missed</h4>
+        ${stats.mostMissed.length===0? `<p class="small muted">Not enough published-test data yet.</p>` :
+          `<p class="small muted" style="margin-bottom:6px;">Missed the most published tests in this class (${stats.mostMissed[0].missed} of ${stats.publishedTestsCount}):</p>
+           ${stats.mostMissed.map(m=>`<div class="small">${esc(m.name)}</div>`).join('')}`}
+      </div>
+      <div class="card pad" style="flex:1; min-width:260px;">
+        <h4 style="margin-bottom:8px;">Best / most consistent</h4>
+        ${!stats.best? `<p class="small muted">No graded submissions yet.</p>` :
+          `<p class="small" style="margin-bottom:4px;"><strong>${esc(stats.best.name)}</strong></p>
+           <p class="small muted">Average ${stats.best.avg.toFixed(1)}% across ${stats.best.count} submission${stats.best.count===1?'':'s'}${stats.best.count>1? ` · ±${stats.best.stddev.toFixed(1)} spread`:''}</p>`}
+      </div>
+    </div>
+
+    ${renderClassListSection(className)}
+
+    <div class="section-title" style="margin-top:30px;">Tests in ${esc(className)}</div>
+    <div class="test-list">
+      ${tests.length? tests.map(t=>testRow(t,{results:{[t.id]: cp.attempts.filter(a=>a._testId===t.id && a.status==='submitted')}})).join('') : `<div class="empty card"><p>No tests assigned to this class yet.</p></div>`}
+    </div>
+
+    <div class="section-title" style="margin-top:30px;">Recent activity</div>
+    <div class="card pad" style="overflow:auto;">
+      ${stats.recentActivity.length===0? `<p class="small muted">Nothing yet.</p>` :
+        `<table class="results"><thead><tr><th>When</th><th>Student</th><th>Test</th><th>Event</th></tr></thead><tbody>
+          ${stats.recentActivity.map(e=>`<tr><td>${fmtDateTimeExact(e.ts)}</td><td>${esc(e.name)}</td><td>${esc(e.testName)}</td><td>${e.type==='submitted'?'Submitted':'Started'}</td></tr>`).join('')}
+        </tbody></table>`}
+    </div>
+  `;
+}
+
+/* -------- Class List (roster) upload/preview/import -------- */
+function renderClassListSection(className){
+  const cp = classPageCache[className];
+  const imp = classListImport[className];
+  return `
+    <div class="section-title" style="margin-top:30px;">Class List</div>
+    <div class="card pad">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <p class="small muted" style="margin:0; max-width:520px;">Upload an .xlsx/.xls sheet with columns <span class="mono">Name | Class | Roll Number | Mobile Number</span> to register this class's students. Students are matched to attempts by their mobile number, not by name alone.</p>
+        <div class="row" style="gap:8px;">
+          <button class="btn secondary small" onclick="downloadClassListTemplate()">Download template</button>
+          <button class="btn amber small" onclick="document.getElementById('rosterFile_${cssId(className)}').click()">Upload .xlsx/.xls</button>
+          <input type="file" id="rosterFile_${cssId(className)}" accept=".xlsx,.xls" style="display:none" onchange="handleClassListFile(this.files[0], '${esc(className)}')">
+        </div>
+      </div>
+      ${imp ? renderClassListPreview(className) : ''}
+      <div class="hr"></div>
+      <p class="small muted" style="margin-bottom:8px;">${cp.students.length} student${cp.students.length===1?'':'s'} registered</p>
+      ${cp.students.length===0? `<p class="small muted">No students registered yet — upload a list above.</p>` : `
+      <div style="overflow:auto;">
+      <table class="results">
+        <thead><tr><th>Name</th><th>Roll No.</th><th>Mobile</th><th></th></tr></thead>
+        <tbody>
+          ${cp.students.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(s=>`
+            <tr><td>${esc(s.name)}</td><td>${esc(s.roll||'')}</td><td class="mono">${esc(s.id)}</td>
+            <td><button class="btn ghost small" onclick="removeClassListStudent('${esc(className)}','${s.id}')">Remove</button></td></tr>
+          `).join('')}
+        </tbody>
+      </table>
+      </div>`}
+    </div>
+  `;
+}
+function downloadClassListTemplate(){
+  const wsData = [
+    ['Name','Class','Roll Number','Mobile Number'],
+    ['Aditi Sharma','Class 10','23','9876543210'],
+    ['Rohan Verma','Class 10','24','9123456780']
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Class List');
+  XLSX.writeFile(wb, 'class_list_template.xlsx');
+}
+function findField(row, candidates){
+  const keys = Object.keys(row);
+  for(const k of keys){
+    const nk = k.trim().toLowerCase().replace(/\s+/g,' ');
+    if(candidates.includes(nk)) return row[k];
+  }
+  return '';
+}
+/** Parses + validates every row from the uploaded sheet, but writes
+    nothing yet — see importClassList() for the actual Firestore writes,
+    which only run once the teacher reviews this preview and confirms. */
+function validateClassListRows(raw, className){
+  const rows = raw.map((r,i)=>{
+    const name = normalizeField(String(findField(r, ['name','student name','full name'])||''));
+    const cls = normalizeField(String(findField(r, ['class'])||''));
+    const roll = normalizeField(String(findField(r, ['roll number','roll no','roll no.','roll'])||''));
+    const mobileRaw = String(findField(r, ['mobile number','mobile','mobile no','mobile no.','phone','phone number'])||'');
+    const canonical = canonicalMobile10(mobileRaw);
+    const issues = [];
+    if(!name) issues.push('Missing name');
+    if(!cls) issues.push('Missing class');
+    else if(normalizeField(cls).toLowerCase()!==normalizeField(className).toLowerCase()) issues.push(`Class mismatch (expected ${className})`);
+    if(!roll) issues.push('Missing roll number');
+    if(!canonical) issues.push('Invalid or non-10-digit mobile number');
+    return { row:i+2, name, class:cls, roll, mobileRaw, mobile:canonical, normalizedName:normalizeName(name), issues };
+  });
+  const firstSeenAt = {};
+  rows.forEach((r,i)=>{
+    if(!r.mobile) return;
+    if(firstSeenAt[r.mobile]===undefined) firstSeenAt[r.mobile]=i;
+    else{
+      r.issues.push('Duplicate mobile number');
+      rows[firstSeenAt[r.mobile]].issues.push('Duplicate mobile number');
+    }
+  });
+  rows.forEach(r=>{ r.issues = [...new Set(r.issues)]; });
+  return rows;
+}
+function handleClassListFile(file, className){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    try{
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, {defval:''});
+      if(!raw.length){ toast('That sheet has no data rows.'); return; }
+      const rows = validateClassListRows(raw, className);
+      classListImport[className] = { rows, mode:'merge', fileName:file.name };
+      render();
+    }catch(err){ toast('Could not read that file: '+err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+function renderClassListPreview(className){
+  const imp = classListImport[className];
+  const rows = imp.rows;
+  const valid = rows.filter(r=>r.issues.length===0);
+  const invalid = rows.filter(r=>r.issues.length>0);
+  return `
+    <div class="card pad" style="margin-top:14px; background:var(--paper);">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <p class="small" style="margin:0;"><strong>${esc(imp.fileName)}</strong> — ${valid.length} valid, ${invalid.length} with issues (excluded from import)</p>
+        <button class="btn ghost small" onclick="cancelClassListImport('${esc(className)}')">Cancel</button>
+      </div>
+      <div style="max-height:280px; overflow:auto; margin-top:10px;">
+      <table class="results">
+        <thead><tr><th>Row</th><th>Name</th><th>Class</th><th>Roll</th><th>Mobile</th><th>Status</th></tr></thead>
+        <tbody>
+          ${rows.map(r=>`
+            <tr style="${r.issues.length? 'background:var(--red-soft);':''}">
+              <td>${r.row}</td><td>${esc(r.name)}</td><td>${esc(r.class)}</td><td>${esc(r.roll)}</td><td>${esc(r.mobile||r.mobileRaw)}</td>
+              <td class="small">${r.issues.length? esc(r.issues.join('; ')) : '✓ OK'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div class="row" style="align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap;">
+        <label class="small" style="display:flex; align-items:center; gap:6px;">
+          <input type="radio" name="importMode_${cssId(className)}" value="merge" ${imp.mode==='merge'?'checked':''} onchange="setClassListImportMode('${esc(className)}','merge')"> Merge/Add (keep existing students, add/update these)
+        </label>
+        <label class="small" style="display:flex; align-items:center; gap:6px;">
+          <input type="radio" name="importMode_${cssId(className)}" value="replace" ${imp.mode==='replace'?'checked':''} onchange="setClassListImportMode('${esc(className)}','replace')"> Replace (this file becomes the entire list)
+        </label>
+      </div>
+      <button class="btn amber small" style="margin-top:10px;" ${valid.length===0?'disabled':''} onclick="importClassList('${esc(className)}')">Import ${valid.length} valid student${valid.length===1?'':'s'}</button>
+    </div>
+  `;
+}
+function setClassListImportMode(className, mode){ classListImport[className].mode = mode; render(); }
+function cancelClassListImport(className){ delete classListImport[className]; render(); }
+/** Writes only to classRosters/{rosterId}/students — never touches
+    tests, attempts, or mobileClaims, so importing (in either mode) can
+    never delete an attempt, a result, or reset an attempt-count counter. */
+async function importClassList(className){
+  const imp = classListImport[className];
+  if(!imp) return;
+  const valid = imp.rows.filter(r=>r.issues.length===0);
+  if(!valid.length) return;
+  const uidv = currentUser.uid;
+  const rid = rosterIdFor(uidv, className);
+  const rosterRef = dbf.collection('classRosters').doc(rid);
+  const studentsRef = rosterRef.collection('students');
+
+  toast('Importing…');
+  try{
+    const cp = classPageCache[className] || {students:[], tests:[], attempts:[]};
+    let newStudents;
+    if(imp.mode==='replace'){
+      newStudents = valid.map(r=>({id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}));
+    } else {
+      const byMobile = {}; (cp.students||[]).forEach(s=>{ byMobile[s.id]=s; });
+      valid.forEach(r=>{ byMobile[r.mobile] = {id:r.mobile, name:r.name, class:className, roll:r.roll, normalizedName:r.normalizedName}; });
+      newStudents = Object.values(byMobile);
+    }
+
+    // The roster PARENT doc must exist before any write to its students
+    // subcollection (firestore.rules checks ownership via that parent) —
+    // so this always runs first, including on a class's very first-ever
+    // import, when this .set() is what creates classRosters/{rid} at all.
+    await rosterRef.set({ ownerId:uidv, className, studentCount:newStudents.length, updatedAt:Date.now() }, {merge:true});
+
+    if(imp.mode==='replace'){
+      const existing = await studentsRef.get();
+      const keep = new Set(valid.map(r=>r.mobile));
+      const toDelete = existing.docs.filter(d=>!keep.has(d.id));
+      for(let i=0;i<toDelete.length;i+=400){
+        const batch = dbf.batch();
+        toDelete.slice(i,i+400).forEach(d=>batch.delete(d.ref));
+        await batch.commit();
+      }
+    }
+    for(let i=0;i<valid.length;i+=400){
+      const batch = dbf.batch();
+      valid.slice(i,i+400).forEach(r=>{
+        batch.set(studentsRef.doc(r.mobile), {
+          name:r.name, class:className, roll:r.roll,
+          normalizedName:r.normalizedName, updatedAt:Date.now()
+        }, {merge:true});
+      });
+      await batch.commit();
+    }
+
+    classPageCache[className] = {...cp, students:newStudents};
+    classesIndex[className] = { studentCount:newStudents.length };
+    delete classListImport[className];
+    toast('Class list imported');
+    render();
+  }catch(err){ toast('Import failed: '+err.message); }
+}
+async function removeClassListStudent(className, mobile){
+  if(!confirm('Remove this student from the class list? This does not delete any test attempts, results, or attempt counters.')) return;
+  const uidv = currentUser.uid;
+  const rid = rosterIdFor(uidv, className);
+  try{
+    await dbf.collection('classRosters').doc(rid).collection('students').doc(mobile).delete();
+    const cp = classPageCache[className];
+    const newStudents = cp.students.filter(s=>s.id!==mobile);
+    await dbf.collection('classRosters').doc(rid).set({studentCount:newStudents.length, updatedAt:Date.now()}, {merge:true});
+    classPageCache[className] = {...cp, students:newStudents};
+    classesIndex[className] = { studentCount:newStudents.length };
+    toast('Removed');
+    render();
+  }catch(err){ toast('Could not remove: '+err.message); }
+}
+
+/* ============================================================
    QUESTION BANK (standalone page)
    ============================================================ */
+let bankClassFilter = 'all';
+function setBankClassFilter(v){ bankClassFilter=v; render(); }
 function viewBank(){
   const bank = getDB().bank || [];
+  const filtered = bankClassFilter==='all' ? bank : bank.filter(item=>(item.assignedClass||'')===bankClassFilter);
   return `
     <div class="dash-head">
       <div>
@@ -917,16 +1607,31 @@ function viewBank(){
       </div>
     </div>
     ${bank.length===0? `<div class="empty card"><h3>Nothing saved yet</h3><p>Open a test's Verify step and use "+ Save to Bank" on any question you'd like to reuse later.</p></div>` : `
+    <div class="row" style="justify-content:flex-end; margin-bottom:12px;">
+      <select onchange="setBankClassFilter(this.value)" style="max-width:180px;">
+        <option value="all" ${bankClassFilter==='all'?'selected':''}>All classes</option>
+        ${CLASS_OPTIONS.map(c=>`<option value="Class ${c}" ${bankClassFilter==='Class '+c?'selected':''}>Class ${c}</option>`).join('')}
+      </select>
+    </div>
+    ${filtered.length===0? `<div class="empty card"><h3>No saved questions for ${esc(bankClassFilter)}</h3><p>Try a different class, or switch back to All classes.</p></div>` : `
     <div class="test-list">
-      ${bank.map(item=>`
+      ${filtered.map(item=>`
         <div class="test-row" style="align-items:flex-start;">
           <div class="ti" style="max-width:75%;">
             <h4 style="font-size:14.5px; font-weight:600;">${esc(item.text.slice(0,140))}${item.text.length>140?'…':''}</h4>
-            <div class="meta">${typeLabelShort(item.type||'single')} · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}</div>
+            <div class="meta">${typeLabelShort(item.type||'single')} · ${item.marks} mark${item.marks===1?'':'s'}${item.negativeMarks?' · -'+item.negativeMarks+' if wrong':''}
+              ${item.assignedClass? `<span class="badge edited" style="margin-left:6px;">${esc(item.assignedClass)}</span>` : ''}
+            </div>
           </div>
-          <div class="ta"><button class="btn danger small" onclick="deleteBankItem('${item.id}')">Delete</button></div>
+          <div class="ta">
+            <select onchange="setBankItemClass('${item.id}', this.value)" style="max-width:130px;">
+              <option value="" ${!item.assignedClass?'selected':''}>No class</option>
+              ${CLASS_OPTIONS.map(c=>`<option value="Class ${c}" ${item.assignedClass==='Class '+c?'selected':''}>Class ${c}</option>`).join('')}
+            </select>
+            <button class="btn danger small" onclick="deleteBankItem('${item.id}')">Delete</button>
+          </div>
         </div>`).join('')}
-    </div>`}
+    </div>`}`}
   `;
 }
 
@@ -1012,39 +1717,67 @@ function persistDraft(){
 }
 
 /* ---- Step 1: Upload ---- */
-const AI_CONVERSION_PROMPT = `I have a question paper that needs converting into a specific plain-text format so I can upload it to a quiz tool. Please reformat the question paper I paste below (or attach) into exactly this layout, question by question.
+const AI_CONVERSION_PROMPT = `I will provide a question paper as pasted text, an image, or an attached file. Convert it into a standardized plain-text format that I can upload to my quiz tool.
 
-IMPORTANT — output format: put your entire answer inside a single fenced code block (triple backticks), with nothing before or after it, and do not use any markdown formatting (no bold, no bullet points, no auto-numbered lists) inside it. This matters because outside a code block, chat interfaces often collapse single line breaks and squash multiple options onto one line — a code block is what keeps every option on its own separate line.
+The input may contain questions from any subject, with different layouts, numbering styles, mathematical notation, tables, diagrams, or answer formats. Read and understand the entire paper before converting it.
 
-For a multiple-choice or true/false question, use lettered options and a letter answer, each on its own line:
-1. <question text>
-A) <option A>
-B) <option B>
-C) <option C>
-D) <option D>
-Answer: <correct option letter>
+### Output format
 
-For a true/false question specifically, use exactly two options worded as True and False:
-2. <question text>
-A) True
-B) False
-Answer: <A or B>
+Output ONLY the reformatted questions. Do not include headers, page numbers, explanations, commentary, or Markdown code fences.
 
-For a question that expects a typed numeric answer (not multiple choice), skip the lettered options entirely and give the accepted answer as a number or a range right after the question:
-3. <question text>
-Answer: <exact number>
+**Multiple-choice questions (MCQ):**
 
-4. <question text>
-Answer: <minimum number>-<maximum number>
+1. A)
 
-Rules:
-- Number every question sequentially starting at 1, followed by a period and a space (e.g. "1. ").
-- Give each option a single capital letter followed by a closing parenthesis and a space (e.g. "A) ").
-- Each option MUST be on its own separate line — never place two or more options on the same line, and never separate them with commas or slashes instead of a line break.
-- Include an "Answer:" line right after each question (after its options, if it has any), on its own line. If you can't determine the correct answer, write "Answer: " with nothing after it rather than guessing.
-- Only use the numeric "Answer: min-max" or "Answer: number" format for questions that genuinely expect a typed numeric answer, not multiple choice — never mix lettered options with a numeric answer line on the same question.
-- Output ONLY the reformatted questions in the format above, inside the single code block described above — no headers, page numbers, explanations, or commentary, and nothing outside that code block.
-- Keep the original question text and options exactly as written; only reformat the layout and numbering.
+   B)
+
+   C)
+
+   D)
+
+   Answer:
+
+**True/False questions:**
+
+2. A) True
+
+   B) False
+
+   Answer:
+
+**Typed numeric-answer questions:**
+
+3. Answer:
+
+### Conversion rules
+
+1. Number every question sequentially, starting from 1, using the format \`1. \`, \`2. \`, etc. Ignore the original question numbering.
+2. Preserve the original question text and options exactly in wording, meaning, and order. Do not rewrite, shorten, paraphrase, or add information.
+3. Preserve all relevant mathematical and scientific notation, including equations, symbols, subscripts, superscripts, fractions, units, chemical formulas, and punctuation. Convert visual formatting into readable plain text when necessary, without changing the meaning.
+4. Identify the question type from the input:
+   - For MCQs, retain all provided options and use capital letters A), B), C), etc., in their original order. Do not assume there are exactly four options; retain the actual number of options.
+   - For True/False questions, use exactly two options: A) True and B) False.
+   - For questions requiring a typed numeric answer, omit lettered options and provide the accepted answer as a number or range.
+5. Determine the correct answer using the question and any answer key provided in the input. If no answer key is provided, solve the question when possible. If the correct answer cannot be determined reliably, leave the answer blank as \`Answer: \`.
+6. For numerical-answer questions, use the exact number or an accepted minimum-maximum range. Do not convert an MCQ into a numeric-answer question merely because its correct option contains a number.
+7. Use exactly three spaces before every option and every Answer line.
+8. Leave one blank line between consecutive options.
+9. Do not leave a blank line between the Answer line of one question and the next question number.
+10. Do not add extra blank lines at the beginning or end of the output.
+11. If the input contains diagrams, images, tables, or formatting that is essential to understanding a question, represent the necessary information in plain text while preserving its meaning.
+12. Do not invent missing questions, options, answers, or text.
+
+### Final validation
+
+Before outputting, verify that:
+
+- Every question is included exactly once.
+- Question numbering is sequential.
+- Every question has an Answer line.
+- MCQs have lettered options and a letter answer.
+- True/False questions have exactly two options.
+- Numeric-answer questions have no lettered options.
+- The output contains nothing except the converted questions.
 
 Here is the question paper to convert:
 [PASTE YOUR QUESTION PAPER TEXT OR ATTACH THE FILE HERE]`;
@@ -1066,7 +1799,7 @@ function stepUpload(){
       <h3 style="font-size:16px; margin-bottom:4px;">Upload or paste the question paper</h3>
       <p class="muted small" style="margin-bottom:16px;">Drop a PDF, a photo/scan of the paper, or a .txt file — or just paste the text directly. Use a format like <span class="mono">1. Question text</span>, options as <span class="mono">A) ...</span>, and optionally <span class="mono">Answer: B</span> so the parser can pick them up. Nothing becomes final until you verify it in the next step.</p>
 
-      <div class="card pad" style="background:#FBF9F4; margin-bottom:16px;">
+      <div class="card pad" style="background:var(--surface-soft); margin-bottom:16px;">
         <div class="row" style="justify-content:space-between; align-items:center;">
           <strong class="small">Question paper in a messy or unsupported layout?</strong>
           <button class="btn ghost small" onclick="toggleAiPromptBox()" id="aiPromptToggleBtn">Show AI prompt</button>
@@ -1099,8 +1832,6 @@ Answer: B
       <div class="row" style="margin-top:16px; justify-content:space-between; flex-wrap:wrap; gap:8px;">
         <div class="row" style="flex-wrap:wrap; gap:8px;">
           <button class="btn secondary" onclick="addBlankQuestion()">+ Add a question manually instead</button>
-          <button class="btn ghost small" onclick="addBlankTrueFalse()">+ True/False</button>
-          <button class="btn ghost small" onclick="addBlankNumerical()">+ Numerical</button>
           <button class="btn secondary" onclick="openBankPicker()">+ Insert from Question Bank</button>
         </div>
         <button class="btn amber" id="extractBtn" onclick="runExtraction()">Extract Questions →</button>
@@ -1113,7 +1844,7 @@ function setProgress(msg){
 }
 function setFilePill(name){
   const s=document.getElementById('fileStatus');
-  if(s) s.innerHTML = name? `<div class="filepill">📄 ${esc(name)} <button onclick="document.getElementById('fileStatus').innerHTML=''">✕</button></div>` : '';
+  if(s) s.innerHTML = name? `<div class="filepill">📄 ${esc(name)} <button onclick="document.getElementById('fileStatus').innerHTML=''" aria-label="Remove file">✕</button></div>` : '';
 }
 async function handleFileUpload(file){
   if(!file) return;
@@ -1215,31 +1946,22 @@ function runExtraction(){
   render();
   toast(`${extracted.length} question(s) extracted — please verify each one`);
 }
+/** Used by the three "add manually" entry points below: creates the new
+    question, then opens the same editor modal used for editing an
+    existing question — directly, in the same click — instead of dropping
+    a blank template into the list and leaving the teacher to scroll down
+    and find it. Cancelling this modal removes the just-added question
+    again, since nothing was actually filled in yet. */
 function addBlankQuestion(){
-  wizardDraft.questions.push({
-    id: uid('q'), text:'New question text', type:'single',
-    options:[{id:'o0',text:'Option A'},{id:'o1',text:'Option B'},{id:'o2',text:'Option C'},{id:'o3',text:'Option D'}],
+  const q = {
+    id: uid('q'), text:'', type:'single',
+    options:[{id:'o0',text:''},{id:'o1',text:''},{id:'o2',text:''},{id:'o3',text:''}],
     correct:[], numericMin:null, numericMax:null, image:null,
     marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  });
+  };
+  wizardDraft.questions.push(q);
   persistDraft(); wizardStep='verify'; render();
-}
-function addBlankTrueFalse(){
-  wizardDraft.questions.push({
-    id: uid('q'), text:'New true/false question', type:'truefalse',
-    options:[{id:'o0',text:'True'},{id:'o1',text:'False'}],
-    correct:[], numericMin:null, numericMax:null, image:null,
-    marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  });
-  persistDraft(); wizardStep='verify'; render();
-}
-function addBlankNumerical(){
-  wizardDraft.questions.push({
-    id: uid('q'), text:'New numerical question', type:'numerical',
-    options:[], correct:[], numericMin:0, numericMax:0, image:null,
-    marks:1, negativeMarks:0, status:'review', lowConfidence:true
-  });
-  persistDraft(); wizardStep='verify'; render();
+  openEditModal(q.id, true);
 }
 function openBankPicker(){
   const bank = getDB().bank || [];
@@ -1334,9 +2056,9 @@ function questionCard(q,i){
       <button class="btn secondary small" onclick="markVerified('${q.id}')">Mark Verified</button>
       ${q.bankId
         ? `<span class="badge verified">✓ In Bank</span>`
-        : `<button class="btn ghost small" onclick="addToBank(findQ('${q.id}'))">+ Save to Bank</button>`}
-      <button class="btn ghost small" onclick="moveQ('${q.id}',-1)">↑</button>
-      <button class="btn ghost small" onclick="moveQ('${q.id}',1)">↓</button>
+        : `<button class="btn ghost small" onclick="addToBank(findQ('${q.id}'), '${wizardDraft.meta.assignedClass||''}')">+ Save to Bank</button>`}
+      <button class="btn ghost small" onclick="moveQ('${q.id}',-1)" aria-label="Move question up">↑</button>
+      <button class="btn ghost small" onclick="moveQ('${q.id}',1)" aria-label="Move question down">↓</button>
       <button class="btn danger small" onclick="deleteQ('${q.id}')">Delete</button>
     </div>
   </div>`;
@@ -1415,7 +2137,7 @@ function renderModalTypeBody(type){
         <div class="editrow">
           <span class="radiomark" data-idx="${i}" onclick="setModalCorrect('${o.id}')" id="mk_${o.id}" style="${modalMarkStyle()}${isCorrect?'background:var(--green);border-color:var(--green);color:#fff;':''}">${isCorrect?'✓':letter(i)}</span>
           <input type="text" id="mo_${o.id}" value="${esc(o.text)}" ${locked?'readonly':''}>
-          ${locked? '' : `<button class="btn ghost small" onclick="removeModalOpt('${o.id}')">✕</button>`}
+          ${locked? '' : `<button class="btn ghost small" onclick="removeModalOpt('${o.id}')" aria-label="Remove option">✕</button>`}
         </div>`;
       }).join('')}
     </div>
@@ -1445,7 +2167,7 @@ function onModalTypeChange(newType){
   }
   document.getElementById('mq_typebody').innerHTML = renderModalTypeBody(newType);
 }
-function openEditModal(id){
+function openEditModal(id, isNew){
   const q=findQ(id);
   window._modalType = q.type || 'single';
   window._modalOptions = (q.options||[]).map(o=>({...o}));
@@ -1458,7 +2180,7 @@ function openEditModal(id){
   modal.className='modalbg';
   modal.innerHTML=`
     <div class="modal">
-      <h3 style="margin-bottom:14px;">Edit question</h3>
+      <h3 style="margin-bottom:14px;">${isNew? 'Add question' : 'Edit question'}</h3>
       <label class="field">Question type</label>
       <select id="mq_type" onchange="onModalTypeChange(this.value)">
         <option value="single" ${window._modalType==='single'?'selected':''}>Single Choice</option>
@@ -1468,7 +2190,7 @@ function openEditModal(id){
       </select>
       <div class="hr"></div>
       <label class="field">Question text</label>
-      <textarea id="mq_text" rows="3" style="font-family:Inter,sans-serif;">${esc(q.text)}</textarea>
+      <textarea id="mq_text" rows="3" style="font-family:Inter,sans-serif;" placeholder="Type the question text…">${esc(q.text)}</textarea>
       <div class="hr"></div>
       <label class="field">Image (optional)</label>
       <div id="mq_imagePreview"></div>
@@ -1481,13 +2203,25 @@ function openEditModal(id){
         <div><label class="field">Negative marks (if wrong)</label><input type="number" id="mq_neg" value="${q.negativeMarks}" min="0" step="0.25"></div>
       </div>
       <div class="row" style="justify-content:flex-end; margin-top:10px;">
-        <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Cancel</button>
+        <button class="btn secondary" onclick="cancelModal('${q.id}', ${isNew?'true':'false'})">Cancel</button>
         <button class="btn amber" onclick="saveModal('${q.id}')">Save changes</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('mq_typebody').innerHTML = renderModalTypeBody(window._modalType);
   renderModalImagePreview();
+}
+/** Cancelling a freshly-added ("+ Add a question manually") question
+    removes it again — it was never confirmed, so nothing should be left
+    behind in the list for the teacher to notice and clean up later.
+    Cancelling while editing an already-existing question just closes the
+    modal, unchanged, exactly as before. */
+function cancelModal(qid, isNew){
+  document.querySelector('.modalbg').remove();
+  if(isNew){
+    wizardDraft.questions = wizardDraft.questions.filter(q=>q.id!==qid);
+    persistDraft(); render();
+  }
 }
 function setModalCorrect(oid){
   if(window._modalType==='multiple'){
@@ -1510,7 +2244,7 @@ function addModalOpt(){
   const idx = wrap.querySelectorAll('.editrow').length;
   const div=document.createElement('div'); div.className='editrow';
   div.innerHTML=`<span class="radiomark" data-idx="${idx}" onclick="setModalCorrect('${nid}')" id="mk_${nid}" style="${modalMarkStyle()}">${letter(idx)}</span>
-    <input type="text" id="mo_${nid}" value="New option"><button class="btn ghost small" onclick="removeModalOpt('${nid}')">✕</button>`;
+    <input type="text" id="mo_${nid}" value="New option"><button class="btn ghost small" onclick="removeModalOpt('${nid}')" aria-label="Remove option">✕</button>`;
   wrap.appendChild(div);
 }
 function removeModalOpt(oid){ const row=document.getElementById('mo_'+oid).closest('.editrow'); row.remove(); if(window._modalCorrect) window._modalCorrect.delete(oid); }
@@ -1717,14 +2451,14 @@ function viewResults(testId){
       <strong class="small">Submissions</strong>
       <div class="row" style="gap:8px;">
         <button class="btn secondary small" onclick="promptReleaseMobile('${testId}')">Release a mobile number</button>
-        <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportCSV('${testId}')">Export CSV</button>
+        <button class="btn secondary small" ${n===0?'disabled':''} onclick="exportResultsXlsx('${testId}')">Download Results (.xlsx)</button>
       </div>
     </div>
     <p class="small muted" style="margin-top:-4px; margin-bottom:14px;">A mobile number is locked to one attempt per test. If a student's attempt got stuck (e.g. they never finished), release their number here so they can try again.</p>
 
     ${n===0? `<div class="empty card"><h3>No submissions yet</h3><p>As soon as a student submits, from any device, it appears here automatically.</p></div>`:`
-    <div class="card pad" style="overflow:auto;">
-      <table class="results">
+    <div class="card pad" style="overflow-x:auto;" data-scroll-key="results-${testId}">
+      <table class="results" style="min-width:1050px;">
         <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Mobile Number</th><th>Score</th><th>%</th><th>Tab switches</th><th>Time</th><th>Status</th><th></th><th></th></tr></thead>
         <tbody>
           ${results.map(r=>`
@@ -1751,8 +2485,8 @@ function viewResults(testId){
       ${hardest? `<div>Most difficult: <strong>Q${hardest.index}</strong> — ${esc(hardest.text.slice(0,70))}${hardest.text.length>70?'…':''} (${hardest.accuracy.toFixed(0)}% accuracy)</div>`:''}
       ${easiest? `<div style="margin-top:4px;">Easiest: <strong>Q${easiest.index}</strong> — ${esc(easiest.text.slice(0,70))}${easiest.text.length>70?'…':''} (${easiest.accuracy.toFixed(0)}% accuracy)</div>`:''}
     </div>`:''}
-    <div class="card pad" style="overflow:auto;">
-      <table class="results">
+    <div class="card pad" style="overflow-x:auto;" data-scroll-key="analytics-${testId}">
+      <table class="results" style="min-width:1250px;">
         <thead><tr><th>Q#</th><th>Question</th><th>Total</th><th>Attempted</th><th>Unattempted</th><th>Correct</th><th>Wrong</th><th>Accuracy</th><th>Avg Marks</th><th>Difficulty</th><th>Flags</th></tr></thead>
         <tbody>
           ${qStats.map(q=>`
@@ -1791,18 +2525,13 @@ function renderUnfinishedSection(testId){
   const test = getDB().tests[testId];
   const raw = getDB().unfinished[testId] || [];
   const now = Date.now();
-  const withStatus = raw.map(a=>{
-    let status;
-    if(a.status==='invalidated') status='Reset';
-    else status = (now - a.startedAt > a.availableMs) ? 'Expired' : 'In Progress';
-    return {...a, _status: status, _elapsed: now - a.startedAt};
-  });
+  const withStatus = raw.map(a=>({...a, _status: deriveAttemptStatus(a, now), _elapsed: now - a.startedAt}));
   const counts = {
     inprogress: withStatus.filter(a=>a._status==='In Progress').length,
-    expired: withStatus.filter(a=>a._status==='Expired').length,
-    reset: withStatus.filter(a=>a._status==='Reset').length
+    expired: withStatus.filter(a=>a._status==='Expired/Time Up').length,
+    reset: withStatus.filter(a=>a._status==='Reset/Invalidated').length
   };
-  const filterMap = {inprogress:'In Progress', expired:'Expired', reset:'Reset'};
+  const filterMap = {inprogress:'In Progress', expired:'Expired/Time Up', reset:'Reset/Invalidated'};
   const filtered = unfinishedFilter==='all' ? withStatus : withStatus.filter(a=>a._status===filterMap[unfinishedFilter]);
   const totalQ = test? test.questions.length : '?';
 
@@ -1811,19 +2540,19 @@ function renderUnfinishedSection(testId){
     <div class="row" style="gap:8px; margin-bottom:14px;">
       <button class="btn ${unfinishedFilter==='all'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('all')">All (${withStatus.length})</button>
       <button class="btn ${unfinishedFilter==='inprogress'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('inprogress')">In Progress (${counts.inprogress})</button>
-      <button class="btn ${unfinishedFilter==='expired'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('expired')">Expired (${counts.expired})</button>
-      <button class="btn ${unfinishedFilter==='reset'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('reset')">Reset (${counts.reset})</button>
+      <button class="btn ${unfinishedFilter==='expired'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('expired')">Expired/Time Up (${counts.expired})</button>
+      <button class="btn ${unfinishedFilter==='reset'?'secondary':'ghost'} small" onclick="setUnfinishedFilter('reset')">Reset/Invalidated (${counts.reset})</button>
     </div>
     ${filtered.length===0? `<div class="empty card"><p>No matching attempts.</p></div>` : `
-    <div class="card pad" style="overflow:auto;">
-      <table class="results">
-        <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Started At</th><th>Time Elapsed</th><th>Last Activity</th><th>Answered</th><th>Tab switches</th><th>Status</th><th></th><th></th></tr></thead>
+    <div class="card pad" style="overflow-x:auto;" data-scroll-key="unfinished-${testId}">
+      <table class="results" style="min-width:1150px;">
+        <thead><tr><th>Name</th><th>Class</th><th>Roll No.</th><th>Started At</th><th>Time Elapsed</th><th>Last Activity</th><th>Answered</th><th>Tab switches</th><th>Status</th><th></th><th></th><th></th></tr></thead>
         <tbody>
           ${filtered.map(a=>{
             const answered = Object.keys(a.answers||{}).length;
             const lastActivityMs = (a.heartbeatAt && a.heartbeatAt.toMillis) ? a.heartbeatAt.toMillis() : (a.invalidatedAt || a.startedAt);
-            const badgeClass = a._status==='Expired' ? 'review' : a._status==='Reset' ? 'draft' : 'edited';
-            const canReset = a._status!=='Reset';
+            const badgeClass = a._status==='Expired/Time Up' ? 'review' : a._status==='Reset/Invalidated' ? 'draft' : 'edited';
+            const canReset = a._status!=='Reset/Invalidated';
             return `
             <tr>
               <td>${esc(a.student.name)}</td>
@@ -1835,8 +2564,9 @@ function renderUnfinishedSection(testId){
               <td>${answered} / ${totalQ}</td>
               <td>${a.tabSwitches||0}</td>
               <td><span class="badge ${badgeClass}">${a._status}</span></td>
-              <td><button class="btn ghost small" onclick="openProgressModal('${testId}','${a.id}')">View Progress</button></td>
-              <td>${canReset? `<button class="btn danger small" onclick="resetAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Reset</button>` : ''}</td>
+              <td style="white-space:nowrap;"><button class="btn ghost small" onclick="openProgressModal('${testId}','${a.id}')">View Progress</button></td>
+              <td style="white-space:nowrap;">${canReset? `<button class="btn danger small" onclick="resetAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Reset</button>` : ''}</td>
+              <td style="white-space:nowrap;"><button class="btn danger small" onclick="deleteAttempt('${testId}','${a.id}','${a.mobileKey||''}')">Delete</button></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1858,7 +2588,7 @@ function openProgressModal(testId, attemptId){
   modal.innerHTML = `
     <div class="modal" style="max-width:680px;">
       <h3 style="margin-bottom:2px;">${esc(a.student.name)}</h3>
-      <p class="muted small" style="margin-bottom:16px;">${esc(a.student.class||'')} ${esc(a.student.roll||'')} · ${answered} / ${test.questions.length} answered so far · status: ${a.status==='invalidated'?'Reset':'In Progress / Expired'}</p>
+      <p class="muted small" style="margin-bottom:16px;">${esc(a.student.class||'')} ${esc(a.student.roll||'')} · ${answered} / ${test.questions.length} answered so far · status: ${deriveAttemptStatus(a, Date.now())}</p>
       ${test.questions.map((q,i)=>renderQuestionReviewCard(q, i, (a.answers&&a.answers[q.id]), undefined, key && key[q.id])).join('')}
       <div class="row" style="justify-content:flex-end; margin-top:6px;">
         <button class="btn secondary" onclick="this.closest('.modalbg').remove()">Close</button>
@@ -1881,6 +2611,18 @@ async function resetAttempt(testId, attemptId, mobileKey){
     if(mobileKey) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(mobileKey).delete().catch(()=>{});
     toast('Attempt reset — the old record is kept, and they can attempt again');
   }catch(err){ toast('Could not reset: '+err.message); }
+}
+/** Unlike Reset, this permanently removes the attempt document itself —
+    for clearing out old In Progress/Expired/Reset clutter you don't need
+    to keep. Also releases the mobile-number claim (same as Reset) so the
+    slot isn't stuck "used" by a deleted attempt. This cannot be undone. */
+async function deleteAttempt(testId, attemptId, mobileKey){
+  if(!confirm('Permanently delete this attempt? This cannot be undone — the record (answers, timestamps) will be gone for good, and the mobile-number slot it used will be freed.')) return;
+  try{
+    await dbf.collection('tests').doc(testId).collection('attempts').doc(attemptId).delete();
+    if(mobileKey) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(mobileKey).delete().catch(()=>{});
+    toast('Attempt deleted');
+  }catch(err){ toast('Could not delete: '+err.message); }
 }
 function openResponseModal(testId, resultId){
   const test = getDB().tests[testId];
@@ -1980,6 +2722,76 @@ async function exportQuestionPaperDocx(testId){
     toast('Could not generate document: '+err.message);
   }
 }
+/** Builds a results spreadsheet: a title, a "Summary" section of
+    test/class-level stats, a blank row, then a "Student Results" section
+    with its own proper header row — kept visually separate purely
+    through structure (section headers merged across the full row width,
+    blank-row spacing) since the free SheetJS build used here can't write
+    real cell colors/fonts into .xlsx. Each row gets a serial number and
+    its time shown as mm:ss rather than raw seconds; there's no "exported
+    on" line, since that timestamp added no value to the file itself. */
+function buildResultsXlsxWorkbook(test, results){
+  const n = results.length;
+  const totalMarks = test.questions.reduce((a,q)=>a+q.marks,0);
+  const avgPct = n? (results.reduce((a,r)=>a+r.percentage,0)/n) : 0;
+  const passCount = results.filter(r=>r.percentage>=test.config.passPercent).length;
+  const passPct = n? (passCount/n*100) : 0;
+  const COLS = 10;
+
+  const rows = [];
+  const merges = [];
+  const addSectionRow = (text) => {
+    rows.push([text]);
+    merges.push({ s:{r:rows.length-1,c:0}, e:{r:rows.length-1,c:COLS-1} });
+  };
+
+  addSectionRow(test.meta.name);
+  addSectionRow('Results Report');
+  rows.push([]);
+  addSectionRow('Summary');
+  rows.push(['Total Questions', test.questions.length]);
+  rows.push(['Total Marks', totalMarks]);
+  rows.push(['Duration (minutes)', test.config.duration]);
+  rows.push(['Pass Percentage', test.config.passPercent+'%']);
+  rows.push(['Negative Marking', test.config.negativeMarking? `Yes (-${test.config.negativeValue} per wrong answer)` : 'No']);
+  rows.push(['Number of Submissions', n]);
+  rows.push(['Class Average', n? avgPct.toFixed(1)+'%' : '\u2014']);
+  rows.push(['Pass Rate', n? passPct.toFixed(0)+'%' : '\u2014']);
+  rows.push([]);
+  addSectionRow('Student Results');
+  rows.push(['S.No.','Name','Class','Roll No.','Mobile Number','Score','%','Tab Switches','Time Taken','Status']);
+  if(n===0){
+    rows.push(['No submissions yet.']);
+  } else {
+    results.forEach((r,i)=>{
+      rows.push([
+        i+1, r.student.name||'', r.student.class||'', r.student.roll||'', r.student.mobile||'',
+        `${r.score} / ${r.maxScore}`, `${r.percentage.toFixed(1)}%`, r.tabSwitches, fmtTime(r.timeTakenMs),
+        r.percentage>=test.config.passPercent? 'PASS':'FAIL'
+      ]);
+    });
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:24},{wch:22},{wch:10},{wch:12},{wch:14},{wch:10},{wch:8},{wch:13},{wch:12},{wch:8}];
+  ws['!merges'] = merges;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Results');
+  return wb;
+}
+function exportResultsXlsx(testId){
+  const db = getDB();
+  const test = db.tests[testId];
+  if(!test){ toast('Test not found'); return; }
+  if(typeof XLSX === 'undefined'){ toast('Spreadsheet library failed to load — check your internet connection'); return; }
+  const results = (db.results[testId]||[]).slice().sort((a,b)=>b.percentage-a.percentage);
+  try{
+    const wb = buildResultsXlsxWorkbook(test, results);
+    XLSX.writeFile(wb, `${test.meta.name.replace(/[^a-z0-9]+/gi,'_')}_results.xlsx`);
+  }catch(err){
+    toast('Could not generate spreadsheet: '+err.message);
+  }
+}
 /** Deletes a submitted attempt entirely and releases its mobile-number
     claim (if it had one), so a corrected retry becomes possible. This is
     the teacher's override for wrong/duplicate/fraudulent entries — it's
@@ -1988,7 +2800,7 @@ async function removeResultEntry(testId, resultId, mobile){
   if(!confirm('Remove this submission? This cannot be undone, and the student will be able to attempt again if their mobile number is released too.')) return;
   try{
     await dbf.collection('tests').doc(testId).collection('attempts').doc(resultId).delete();
-    const key = sanitizeMobile(mobile);
+    const key = canonicalMobile10(mobile);
     if(key) await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(key).delete().catch(()=>{});
     toast('Submission removed');
   }catch(err){ toast('Could not remove: '+err.message); }
@@ -1999,8 +2811,8 @@ function promptReleaseMobile(testId){
   releaseMobile(testId, mobile);
 }
 async function releaseMobile(testId, mobile){
-  const key = sanitizeMobile(mobile);
-  if(key.length<6){ toast('Enter a valid mobile number'); return; }
+  const key = canonicalMobile10(mobile);
+  if(!key){ toast('Enter a valid 10-digit mobile number'); return; }
   try{
     await dbf.collection('tests').doc(testId).collection('mobileClaims').doc(key).delete();
     // Also invalidate (never delete) any stuck, never-submitted attempt
@@ -2181,6 +2993,19 @@ function applyAttemptResponse(a, attemptId){
   attemptState.clockOffset = 0; // always 0 now — see syncProgress() for why the read-back was removed
   attemptState.phase = 'exam';
   localStorage.setItem(attemptState.storageKey, attemptId);
+
+  // Resuming (refresh, reopened tab, reconnect after being offline) must
+  // never hand back time that already ran out while this browser was away.
+  // If the allowance is already spent, skip straight to an auto-submit
+  // instead of drawing the exam UI and waiting for the next 1s tick — that
+  // gap would otherwise let a resumed-but-expired attempt sit interactable,
+  // even if only briefly. firestore.rules independently rejects the write
+  // too if it somehow arrives past the deadline anyway.
+  if(Date.now() - attemptState.startedAt >= attemptState.availableMs){
+    finishExam(true); // finishExam() draws its own "Submitting…" state immediately
+    return;
+  }
+
   attachExamRuntime();
   drawAttempt();
   syncProgressSafe(); // pulls a real clock-offset reading immediately, rather than waiting for the first heartbeat
@@ -2203,7 +3028,14 @@ function drawAttempt(){
     el.innerHTML = `
       <div class="instr">
         <h2 style="margin-bottom:6px;">${esc(t.meta.name)}</h2>
-        <p class="muted small" style="margin-bottom:22px;">Enter your details to begin.</p>
+        <p class="muted small" style="margin-bottom:14px;">Enter your details to begin.</p>
+        <ul class="small muted" style="margin:0 0 20px; padding-left:18px; line-height:1.7;">
+          <li><strong>Name:</strong> Enter your full registered name.</li>
+          <li><strong>Class:</strong> Enter/select the correct class.</li>
+          <li><strong>Roll number:</strong> Enter the registered roll number.</li>
+          <li><strong>Mobile number:</strong> Enter the registered 10-digit number.</li>
+        </ul>
+        <div id="s_error"></div>
         <div class="fieldgrid">
           <div><label class="field">Full name</label><input type="text" id="s_name" value="${esc(attemptState.student.name)}"></div>
           <div><label class="field">Roll number</label><input type="text" id="s_roll" value="${esc(attemptState.student.roll)}"></div>
@@ -2215,7 +3047,7 @@ function drawAttempt(){
           </div>
           <div><label class="field">Mobile Number</label><input type="text" id="s_mobile" value="${esc(attemptState.student.mobile)}"></div>
         </div>
-        <button class="btn amber" onclick="submitDetails()">Continue →</button>
+        <button class="btn amber" id="s_continue" onclick="submitDetails()">Continue →</button>
       </div>`;
     return;
   }
@@ -2265,18 +3097,77 @@ function drawAttempt(){
     return;
   }
 }
-function submitDetails(){
-  const mobile = document.getElementById('s_mobile').value.trim();
-  if(sanitizeMobile(mobile).length < 6){
-    alert('Please enter a valid mobile number.');
+function showDetailsError(msg){
+  const el = document.getElementById('s_error');
+  if(el) el.innerHTML = msg ? `<div class="empty" style="padding:12px 14px; margin-bottom:16px; border-color:var(--red-soft);"><p class="small" style="color:var(--red); margin:0;">${esc(msg)}</p></div>` : '';
+}
+/** Validates the typed details against this test's class list (if the
+    teacher has one configured for this test's class) before an attempt or
+    mobile-claim is ever written. firestore.rules independently re-checks
+    the same class-list match at write time (see canCreateAttempt in
+    firestore.rules) — this client-side pass exists only to give a fast,
+    friendly error instead of a raw permission-denied. */
+async function submitDetails(){
+  const mobileRaw = document.getElementById('s_mobile').value.trim();
+  const canonicalMobile = canonicalMobile10(mobileRaw);
+  const name = document.getElementById('s_name').value.trim();
+  const roll = document.getElementById('s_roll').value.trim();
+  const cls = document.getElementById('s_class').value.trim();
+  showDetailsError('');
+
+  if(!canonicalMobile){
+    showDetailsError('Please enter a valid 10-digit mobile number.');
     return;
   }
-  attemptState.student = {
-    name: document.getElementById('s_name').value.trim() || 'Anonymous',
-    roll: document.getElementById('s_roll').value.trim(),
-    class: document.getElementById('s_class').value.trim(),
-    mobile
+  if(!name){
+    showDetailsError('Please enter your full name.');
+    return;
+  }
+
+  let student = {
+    name: name || 'Anonymous', roll, class: cls,
+    mobile: canonicalMobile, normalizedName: normalizeName(name)
   };
+
+  const t = attemptState.test;
+  const assignedClass = (t.meta && t.meta.assignedClass) || '';
+  const btn = document.getElementById('s_continue');
+  if(assignedClass){
+    if(btn){ btn.disabled = true; btn.textContent = 'Checking…'; }
+    try{
+      const rid = rosterIdFor(t.ownerId, assignedClass);
+      const rosterSnap = await dbf.collection('classRosters').doc(rid).get();
+      const rosterActive = rosterSnap.exists && (rosterSnap.data().studentCount||0) > 0;
+      if(rosterActive){
+        const studentSnap = await dbf.collection('classRosters').doc(rid)
+          .collection('students').doc(canonicalMobile).get();
+        const match = studentSnap.exists ? studentSnap.data() : null;
+        const ok = match
+          && match.normalizedName === student.normalizedName
+          && normalizeField(match.class) === normalizeField(assignedClass)
+          && (!match.roll || normalizeField(match.roll) === normalizeField(roll));
+        if(!ok){
+          showDetailsError('Student details not found. Please enter all details correctly.');
+          if(btn){ btn.disabled = false; btn.textContent = 'Continue →'; }
+          return;
+        }
+        // Use the class list's own canonical record so what gets stored
+        // (and what firestore.rules compares against) is byte-for-byte the
+        // same as the registered entry, not whatever capitalization/
+        // spacing the student happened to type.
+        student = {
+          name: match.name, roll: match.roll, class: match.class,
+          mobile: canonicalMobile, normalizedName: match.normalizedName
+        };
+      }
+    }catch(err){
+      showDetailsError("Couldn't verify your details right now — check your connection and try again.");
+      if(btn){ btn.disabled = false; btn.textContent = 'Continue →'; }
+      return;
+    }
+  }
+
+  attemptState.student = student;
   attemptState.phase='instructions';
   drawAttempt();
 }
@@ -2309,7 +3200,10 @@ async function startAttempt(){
   }
 
   el.innerHTML = `<div class="fullload"><span class="spinner"></span>Starting…</div>`;
-  const mobileKey = sanitizeMobile(attemptState.student.mobile);
+  // student.mobile is already the canonical 10-digit value set in
+  // submitDetails() (either what was typed, or — when a class list matched —
+  // the roster's own canonical record), so this is just a defensive re-normalize.
+  const mobileKey = canonicalMobile10(attemptState.student.mobile);
   // Always writes with increment(1) and never reads first: Firestore
   // resolves a missing field as 0, so a first-ever attempt is naturally a
   // "create" landing on count 1, and every attempt after is an "update"
