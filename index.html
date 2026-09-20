@@ -28,8 +28,36 @@
   --red-soft:#F6DFDA;
   --muted:#78716A;
   --border:#DED6C4;
+  --surface-soft:#FBF9F4;
+  --neutral-soft:#EDEAE0;
   --shadow: 0 1px 0 rgba(27,36,48,.04);
   --radius: 3px;
+}
+/* Dark mode — teacher-facing pages only (toggled via the topbar button).
+   Scoped to body.teacher-dark so the student exam experience (attempt
+   shell) is never affected; renderInner() only ever adds this class
+   while rendering the authenticated teacher shell and strips it
+   everywhere else. Every teacher-facing rule already reads color from
+   these variables, so redefining them here is enough to re-theme the
+   whole dashboard, wizard, results, and classes UI without a second copy
+   of each rule. */
+body.teacher-dark{
+  --ink:#EDE8DA;
+  --ink-soft:#C7BFAA;
+  --paper:#1C1A14;
+  --paper-line:#332F22;
+  --card:#26231A;
+  --amber:#E0A855;
+  --amber-soft:#3B2E17;
+  --green:#7BCBA0;
+  --green-soft:#203A2C;
+  --red:#E28A79;
+  --red-soft:#3C231F;
+  --muted:#A69E8A;
+  --border:#3A3627;
+  --surface-soft:#231F16;
+  --neutral-soft:#332F22;
+  --shadow: 0 1px 0 rgba(0,0,0,.3);
 }
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
@@ -45,6 +73,16 @@ h1,h2,h3,h4{font-family:'Source Serif 4',serif; font-weight:700; margin:0; color
 a{color:inherit;}
 button{font-family:'Inter',sans-serif;}
 .mono{font-family:'IBM Plex Mono',monospace;}
+body{transition:background-color .15s, color .15s;}
+
+/* Keyboard-focus outlines — visible only for keyboard/assistive-tech
+   navigation (:focus-visible), not on every mouse click, on every
+   naturally-focusable control in the app: buttons, links, form fields. */
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible{
+  outline:2px solid var(--amber);
+  outline-offset:2px;
+}
 
 /* ---------- layout shells ---------- */
 #app{min-height:100vh; display:flex; flex-direction:column;}
@@ -62,9 +100,15 @@ button{font-family:'Inter',sans-serif;}
 .brand .name{font-family:'Source Serif 4',serif; font-weight:700; font-size:19px; letter-spacing:.2px;}
 .brand .tag{color:var(--muted); font-size:12.5px;}
 .navtoggle{display:none; background:none; border:1px solid var(--border); border-radius:4px; padding:7px 12px; font-size:16px; cursor:pointer; color:var(--ink);}
-.topnav{display:flex; gap:22px; font-size:13.5px; color:var(--ink-soft);}
+.topnav{display:flex; gap:22px; font-size:13.5px; color:var(--ink-soft); align-items:center;}
 .topnav span{cursor:pointer; padding-bottom:3px; border-bottom:2px solid transparent;}
 .topnav span.active{border-bottom-color:var(--amber); color:var(--ink); font-weight:600;}
+.themetoggle{
+  font-family:'Inter',sans-serif; font-size:13px; cursor:pointer;
+  background:none; border:1px solid var(--border); border-radius:20px;
+  padding:5px 12px; color:var(--ink-soft);
+}
+.themetoggle:hover{border-color:var(--ink-soft); color:var(--ink);}
 .shell{flex:1; width:100%; max-width:1080px; margin:0 auto; padding:34px 28px 70px;}
 .shell.wide{max-width:1220px;}
 
@@ -89,7 +133,7 @@ button{font-family:'Inter',sans-serif;}
 label.field{display:block; font-size:12.5px; color:var(--muted); margin-bottom:5px; font-weight:600; letter-spacing:.2px;}
 input[type=text],input[type=number],input[type=datetime-local],textarea,select{
   width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:var(--radius);
-  background:#fff; font-family:'Inter',sans-serif; font-size:14px; color:var(--ink);
+  background:var(--card); font-family:'Inter',sans-serif; font-size:14px; color:var(--ink);
 }
 textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;}
 .fieldgrid{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;}
@@ -100,7 +144,7 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 .badge.verified{background:var(--green-soft); color:var(--green);}
 .badge.review{background:var(--red-soft); color:var(--red);}
 .badge.edited{background:var(--amber-soft); color:var(--amber);}
-.badge.draft{background:#EDEAE0; color:var(--muted);}
+.badge.draft{background:var(--neutral-soft); color:var(--muted);}
 .badge.published{background:var(--green-soft); color:var(--green);}
 .muted{color:var(--muted);}
 .small{font-size:12.5px;}
@@ -134,7 +178,7 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 .step.done{color:var(--ink-soft);}
 .dropzone{
   border:1.5px dashed var(--border); border-radius:var(--radius); padding:40px 20px;
-  text-align:center; color:var(--muted); background:#FBF9F4; margin-bottom:18px;
+  text-align:center; color:var(--muted); background:var(--surface-soft); margin-bottom:18px;
 }
 .dropzone.drag{border-color:var(--amber); background:var(--amber-soft);}
 .spinner{
@@ -143,7 +187,7 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 }
 @keyframes spin{to{transform:rotate(360deg);}}
 .progressline{font-size:12.5px; color:var(--muted); margin-top:10px; min-height:18px;}
-.filepill{display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--border); border-radius:20px; font-size:12.5px; background:#fff; margin-top:10px;}
+.filepill{display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--border); border-radius:20px; font-size:12.5px; background:var(--card); margin-top:10px;}
 .filepill button{border:none; background:none; cursor:pointer; color:var(--red); font-size:13px;}
 
 /* question card - ruled paper feel */
@@ -216,15 +260,15 @@ textarea{resize:vertical; font-family:'IBM Plex Mono',monospace; font-size:13px;
 table.results{width:100%; border-collapse:collapse; font-size:13.5px;}
 table.results th{text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); padding:8px 10px; border-bottom:1px solid var(--border);}
 table.results td{padding:9px 10px; border-bottom:1px solid var(--paper-line);}
-table.results tr:hover td{background:#FBF9F4;}
+table.results tr:hover td{background:var(--surface-soft);}
 
 .modalbg{position:fixed; inset:0; background:rgba(27,36,48,.45); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px;}
-.modal{background:#fff; border-radius:6px; max-width:560px; width:100%; max-height:88vh; overflow:auto; padding:24px;}
+.modal{background:var(--card); border-radius:6px; max-width:560px; width:100%; max-height:88vh; overflow:auto; padding:24px;}
 .authshell{max-width:400px; margin:70px auto 0; padding-bottom:60px;}
 .authmsg{background:var(--red-soft); color:var(--red); padding:9px 12px; border-radius:4px; font-size:13px; margin-bottom:12px;}
 .synctag{font-size:11px; padding:2px 9px; border-radius:20px; font-weight:700;}
 .synctag.online{background:var(--green-soft); color:var(--green);}
-.synctag.offline{background:#EDEAE0; color:var(--muted);}
+.synctag.offline{background:var(--neutral-soft); color:var(--muted);}
 .fullload{display:flex; align-items:center; justify-content:center; min-height:60vh; color:var(--muted);}
 @media (max-width:720px){
   .fieldgrid{grid-template-columns:1fr;}
@@ -303,15 +347,13 @@ function rosterIdFor(ownerId, className){ return ownerId+'__'+className; }
    test, question-bank item, submission, and result lives in Firestore —
    nothing persistent is kept in localStorage or embedded in URLs anymore.
    Paste your project's config below (see SETUP.md) before hosting this. */
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBZMcfQ-7m6QRaHzxJXBKfiOsYoS1ddLDs",
-  authDomain: "testlink-4bec5.firebaseapp.com",
-  projectId: "testlink-4bec5",
-  storageBucket: "testlink-4bec5.firebasestorage.app",
-  messagingSenderId: "630221369903",
-  appId: "1:630221369903:web:dd9a48361c680f44c78cda",
-  measurementId: "G-9WC9NCWF2N"
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
 const FIREBASE_ENABLED = !!(firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('PASTE'));
 let auth=null, dbf=null, currentUser=null, authReady=false;
@@ -748,6 +790,12 @@ function renderInner(){
   const hash = location.hash || '#/dashboard';
   const app = document.getElementById('app');
 
+  // Default every render to light mode; only the teacher-shell branch
+  // below (the sole place dark mode is meant to apply) turns it back on,
+  // so any other page — including the student attempt shell — can never
+  // inherit a dark class left over from a previous render.
+  document.body.classList.remove('teacher-dark');
+
   // The Results page's listener re-reads on every change to any attempt in
   // that test (including every student's 30s heartbeat) — cheap while the
   // teacher is actually looking at it, wasteful once they've navigated
@@ -845,6 +893,13 @@ function renderInner(){
   }
   else { body=viewDashboard(); route='dashboard'; }
 
+  // This is the only branch that ever renders the teacher shell — dark
+  // mode is scoped to it by toggling the class only here. Every other
+  // exit point in renderInner() (auth gate, attempt shell, loading
+  // states above) leaves the class untouched from the top-of-function
+  // removal, so a student's browser can never end up in dark mode.
+  document.body.classList.toggle('teacher-dark', teacherTheme==='dark');
+
   app.innerHTML = `
     <div class="topbar">
       <div class="brand" onclick="location.hash='#/dashboard'" style="flex-direction:column; align-items:flex-start; gap:0;">
@@ -858,6 +913,7 @@ function renderInner(){
         <span class="${route==='create'?'active':''}" onclick="mobileNavOpen=false; startNewTest()">Create Test</span>
         <span class="${route==='bank'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/bank'">Question Bank</span>
         <span class="${route==='classes'?'active':''}" onclick="mobileNavOpen=false; location.hash='#/classes'">Classes</span>
+        <button class="themetoggle" onclick="toggleTeacherTheme()" aria-label="${teacherTheme==='dark'?'Switch to light mode':'Switch to dark mode'}">${teacherTheme==='dark'?'☀️ Light':'🌙 Dark'}</button>
         <span onclick="mobileNavOpen=false; doLogout()">Sign out (${esc(currentUser.email)})</span>
       </div>
     </div>
@@ -868,6 +924,15 @@ function renderInner(){
 }
 let mobileNavOpen = false;
 function toggleMobileNav(){ mobileNavOpen = !mobileNavOpen; render(); }
+// Dark mode preference — teacher-facing pages only (see the
+// body.classList.toggle('teacher-dark', ...) call above). Persisted per
+// browser so it's remembered next time this teacher signs in here.
+let teacherTheme = localStorage.getItem('teacherTheme') || 'light';
+function toggleTeacherTheme(){
+  teacherTheme = teacherTheme==='dark' ? 'light' : 'dark';
+  localStorage.setItem('teacherTheme', teacherTheme);
+  render();
+}
 window.addEventListener('hashchange', render);
 window.addEventListener('DOMContentLoaded', render);
 
@@ -1734,7 +1799,7 @@ function stepUpload(){
       <h3 style="font-size:16px; margin-bottom:4px;">Upload or paste the question paper</h3>
       <p class="muted small" style="margin-bottom:16px;">Drop a PDF, a photo/scan of the paper, or a .txt file — or just paste the text directly. Use a format like <span class="mono">1. Question text</span>, options as <span class="mono">A) ...</span>, and optionally <span class="mono">Answer: B</span> so the parser can pick them up. Nothing becomes final until you verify it in the next step.</p>
 
-      <div class="card pad" style="background:#FBF9F4; margin-bottom:16px;">
+      <div class="card pad" style="background:var(--surface-soft); margin-bottom:16px;">
         <div class="row" style="justify-content:space-between; align-items:center;">
           <strong class="small">Question paper in a messy or unsupported layout?</strong>
           <button class="btn ghost small" onclick="toggleAiPromptBox()" id="aiPromptToggleBtn">Show AI prompt</button>
@@ -1779,7 +1844,7 @@ function setProgress(msg){
 }
 function setFilePill(name){
   const s=document.getElementById('fileStatus');
-  if(s) s.innerHTML = name? `<div class="filepill">📄 ${esc(name)} <button onclick="document.getElementById('fileStatus').innerHTML=''">✕</button></div>` : '';
+  if(s) s.innerHTML = name? `<div class="filepill">📄 ${esc(name)} <button onclick="document.getElementById('fileStatus').innerHTML=''" aria-label="Remove file">✕</button></div>` : '';
 }
 async function handleFileUpload(file){
   if(!file) return;
@@ -1992,8 +2057,8 @@ function questionCard(q,i){
       ${q.bankId
         ? `<span class="badge verified">✓ In Bank</span>`
         : `<button class="btn ghost small" onclick="addToBank(findQ('${q.id}'), '${wizardDraft.meta.assignedClass||''}')">+ Save to Bank</button>`}
-      <button class="btn ghost small" onclick="moveQ('${q.id}',-1)">↑</button>
-      <button class="btn ghost small" onclick="moveQ('${q.id}',1)">↓</button>
+      <button class="btn ghost small" onclick="moveQ('${q.id}',-1)" aria-label="Move question up">↑</button>
+      <button class="btn ghost small" onclick="moveQ('${q.id}',1)" aria-label="Move question down">↓</button>
       <button class="btn danger small" onclick="deleteQ('${q.id}')">Delete</button>
     </div>
   </div>`;
@@ -2072,7 +2137,7 @@ function renderModalTypeBody(type){
         <div class="editrow">
           <span class="radiomark" data-idx="${i}" onclick="setModalCorrect('${o.id}')" id="mk_${o.id}" style="${modalMarkStyle()}${isCorrect?'background:var(--green);border-color:var(--green);color:#fff;':''}">${isCorrect?'✓':letter(i)}</span>
           <input type="text" id="mo_${o.id}" value="${esc(o.text)}" ${locked?'readonly':''}>
-          ${locked? '' : `<button class="btn ghost small" onclick="removeModalOpt('${o.id}')">✕</button>`}
+          ${locked? '' : `<button class="btn ghost small" onclick="removeModalOpt('${o.id}')" aria-label="Remove option">✕</button>`}
         </div>`;
       }).join('')}
     </div>
@@ -2179,7 +2244,7 @@ function addModalOpt(){
   const idx = wrap.querySelectorAll('.editrow').length;
   const div=document.createElement('div'); div.className='editrow';
   div.innerHTML=`<span class="radiomark" data-idx="${idx}" onclick="setModalCorrect('${nid}')" id="mk_${nid}" style="${modalMarkStyle()}">${letter(idx)}</span>
-    <input type="text" id="mo_${nid}" value="New option"><button class="btn ghost small" onclick="removeModalOpt('${nid}')">✕</button>`;
+    <input type="text" id="mo_${nid}" value="New option"><button class="btn ghost small" onclick="removeModalOpt('${nid}')" aria-label="Remove option">✕</button>`;
   wrap.appendChild(div);
 }
 function removeModalOpt(oid){ const row=document.getElementById('mo_'+oid).closest('.editrow'); row.remove(); if(window._modalCorrect) window._modalCorrect.delete(oid); }
