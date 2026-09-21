@@ -56,14 +56,30 @@ service cloud.firestore {
     // Validates a brand-new attempt document against the test's actual
     // rules — this is the only thing standing between a student and just
     // writing themselves unlimited time, since there's no Cloud Function
-    // here to check it in application code.
+    // here to check it in application code. Also bounds the shape/size of
+    // every field a stranger's browser controls (name, roll, mobile, the
+    // answers/marked maps, question-order arrays): index.html's own UI
+    // never produces anything outside these bounds, so this only ever
+    // rejects a hand-crafted write that skips the app entirely and calls
+    // Firestore directly — it costs legitimate students nothing.
     function canCreateAttempt(testId, d) {
       let test = get(/databases/$(database)/documents/tests/$(testId)).data;
       return test.status == 'published'
         && d.testId == testId
         && d.status == 'in-progress'
-        && d.answers.size() == 0
+        && d.answers is map && d.answers.size() == 0
+        && d.marked is map && d.marked.size() == 0
         && d.tabSwitches == 0
+        && d.currentIdx == 0
+        && d.order is list && d.order.size() == test.questions.size()
+        && d.optOrder is map && d.optOrder.size() == test.questions.size()
+        && d.student is map
+        && d.student.name is string && d.student.name.size() <= 200
+        && d.student.class is string && d.student.class.size() <= 50
+        && d.student.roll is string && d.student.roll.size() <= 50
+        && d.student.mobile is string && d.student.mobile.size() <= 20
+        && d.student.normalizedName is string && d.student.normalizedName.size() <= 200
+        && d.mobileKey is string && d.mobileKey.size() <= 20
         // startedAt must be (approximately) now — a student can't backdate
         // it to manufacture extra elapsed time, nor postdate it to delay
         // when their timer starts counting down.
@@ -79,10 +95,22 @@ service cloud.firestore {
 
     // ---- tests -------------------------------------------------------
     match /tests/{testId} {
-      // Anyone can read a published test (students aren't logged in).
-      // Only the owning teacher can read their own drafts, or edit/delete anything.
-      allow read:   if resource.data.status == 'published'
-                    || (request.auth != null && request.auth.uid == resource.data.ownerId);
+      // A specific test's document ID is enough to fetch it once
+      // published (this is what makes the public share link and the
+      // slug lookup work without being signed in) — get and list are
+      // split so that "list" (querying the collection, rather than
+      // fetching one known document) is bounded: a stranger can still
+      // run the exact one-result-by-slug query the app itself uses
+      // (status=='published' with a query limit of 1), but can no longer
+      // enumerate every published test on this project in a single open
+      // query, which would otherwise hand over every test's full
+      // question bank — including embedded answer keys for
+      // "immediate"/"score only" visibility tests — not just the one
+      // test a given link was actually shared for.
+      allow get: if resource.data.status == 'published'
+                  || (request.auth != null && request.auth.uid == resource.data.ownerId);
+      allow list: if (request.auth != null && request.auth.uid == resource.data.ownerId)
+                  || (resource.data.status == 'published' && request.query.limit <= 1);
       allow create: if request.auth != null && request.auth.uid == request.resource.data.ownerId;
       allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
 
@@ -109,6 +137,18 @@ service cloud.firestore {
             request.resource.data.order == resource.data.order &&
             request.resource.data.optOrder == resource.data.optOrder &&
             request.resource.data.student == resource.data.student &&
+            // Bounds on the fields a student's browser writes on every
+            // progress sync/submit — generous enough that no real exam
+            // ever approaches them, tight enough to stop a direct-API
+            // write from padding an attempt with junk data.
+            request.resource.data.answers is map &&
+            request.resource.data.answers.size() <= 500 &&
+            request.resource.data.marked is map &&
+            request.resource.data.marked.size() <= 500 &&
+            request.resource.data.tabSwitches is int &&
+            request.resource.data.tabSwitches >= 0 &&
+            request.resource.data.currentIdx is int &&
+            (!('heartbeatAt' in request.resource.data) || request.resource.data.heartbeatAt is timestamp) &&
             // Every save — including the final submit — has to arrive within
             // the real allowance plus a short grace period for normal network
             // latency. This is checked against request.time, Firestore's own
@@ -144,6 +184,11 @@ service cloud.firestore {
         allow create: if
           get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published' &&
           request.resource.data.count <= get(/databases/$(database)/documents/tests/$(testId)).data.config.attempts &&
+          request.resource.data.student is map &&
+          request.resource.data.student.name is string && request.resource.data.student.name.size() <= 200 &&
+          request.resource.data.student.class is string && request.resource.data.student.class.size() <= 50 &&
+          request.resource.data.student.roll is string && request.resource.data.student.roll.size() <= 50 &&
+          request.resource.data.student.mobile is string && request.resource.data.student.mobile.size() <= 20 &&
           classListOk(get(/databases/$(database)/documents/tests/$(testId)).data, mobileKey, request.resource.data.student);
         allow update: if
           get(/databases/$(database)/documents/tests/$(testId)).data.status == 'published' &&
@@ -210,7 +255,19 @@ service cloud.firestore {
           !exists(/databases/$(database)/documents/classRosters/$(rosterId)) ||
           get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid
         );
-        allow write: if request.auth != null &&
+        // create/update (not delete — request.resource doesn't exist on a
+        // delete, so field checks can't apply there) get the same kind of
+        // size/type bounds as the public-facing writes above, even though
+        // this path is already owner-only: cheap insurance against a
+        // malformed import (e.g. a spreadsheet cell that somehow contains
+        // megabytes of text) silently writing an oversized document.
+        allow create, update: if request.auth != null &&
+          exists(/databases/$(database)/documents/classRosters/$(rosterId)) &&
+          get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid &&
+          request.resource.data.name is string && request.resource.data.name.size() <= 200 &&
+          request.resource.data.roll is string && request.resource.data.roll.size() <= 50 &&
+          request.resource.data.class is string && request.resource.data.class.size() <= 50;
+        allow delete: if request.auth != null &&
           exists(/databases/$(database)/documents/classRosters/$(rosterId)) &&
           get(/databases/$(database)/documents/classRosters/$(rosterId)).data.ownerId == request.auth.uid;
       }
@@ -278,6 +335,39 @@ service cloud.firestore {
       attempts pattern) could in principle copy its exact fields — it
       stops accidental wrong-name/wrong-class entries and casual
       impersonation, not a determined, informed attacker.
+    - A stranger can fetch one specific published test by its document ID
+      (needed for the share link), but can no longer run an open query
+      across the whole tests collection to enumerate every published test
+      on the project — list is only allowed for the owner, or for the
+      exact one-result-by-slug query the app itself uses. Without this,
+      anyone with the page's already-public Firebase config (see
+      note below) could have pulled every test's full question bank —
+      including embedded answer keys on "immediate"/"score only" tests —
+      straight out of the browser console, not just the one test a given
+      link was actually shared for.
+    - Every field a stranger's browser controls (student name/class/roll/
+      mobile, the answers/marked maps, the question-order arrays) is
+      bounded in size and type at write time — generous enough that
+      nothing in index.html's own UI ever approaches the limits, tight
+      enough that a hand-crafted write bypassing the app entirely (calling
+      Firestore straight from a browser console) can't pad an attempt or
+      a roster entry with megabytes of junk data.
+
+  A note on the Firebase web config (apiKey, authDomain, etc.) in
+  index.html: this is not a secret the way a server API key or a
+  database password is. It only tells Google's servers which project to
+  route a request to — it grants no access on its own. Every Firebase
+  web app necessarily ships this in the browser bundle; hiding the
+  GitHub repo wouldn't hide it either, since anyone can already read it
+  via "View Source" on the deployed site. The rules above — not the
+  key's secrecy — are what actually gate who can read or write data.
+  Two things worth doing once, outside this file, in the Google Cloud
+  Console: (1) restrict the key itself (APIs & Services → Credentials)
+  to an HTTP-referrer allowlist for your deployed domain, and to only
+  the Identity Toolkit/Firebase APIs it actually needs, so it can't be
+  reused against other Google APIs on the same project; (2) if you don't
+  want strangers creating teacher accounts, disable public sign-up (or
+  switch to invite-only) in Authentication → Sign-in method.
 
   If the answer-key tradeoff on "immediate"/"score only" tests ever needs
   closing too, the fix is a Cloud Function that grades everything
